@@ -1,0 +1,42 @@
+{
+  "entities": {
+    "Target": {
+      "title": "Target",
+      "description": "An entity being monitored for intelligence updates.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier for the target." },
+        "query": { "type": "string", "description": "The search query (domain, email, etc.)." },
+        "status": { "type": "string", "enum": ["active", "paused"], "description": "Monitoring status." },
+        "lastChecked": { "type": "string", "format": "date-time", "description": "Last time the target was scanned." },
+        "uid": { "type": "string", "description": "Owner's user ID." },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["query", "status", "uid", "createdAt"]
+    },
+    "Alert": {
+      "title": "Alert",
+      "description": "A real-time intelligence update for a monitored target.",
+      "type": "object",
+      "properties": {
+        "targetId": { "type": "string", "description": "ID of the monitored target." },
+        "title": { "type": "string", "description": "Alert title." },
+        "content": { "type": "string", "description": "Alert details." },
+        "severity": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "uid": { "type": "string", "description": "Owner's user ID." }
+      },
+      "required": ["targetId", "title", "content", "severity", "timestamp", "uid"]
+    }
+  },
+  "firestore": {
+    "/targets/{targetId}": {
+      "schema": "Target",
+      "description": "Collection of entities being monitored."
+    },
+    "/alerts/{alertId}": {
+      "schema": "Alert",
+      "description": "Real-time alerts for monitored entities."
+    }
+  }
+}
