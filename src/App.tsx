@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Shield, Globe, Database, Share2, Loader2, AlertTriangle, MessageSquare, Send, Download, FileText, FileSpreadsheet, FileCode, Activity, LogIn, LogOut, Trash2, Bell, Image as ImageIcon, Film, Map as MapIcon, Volume2, Play, Upload, Eye } from 'lucide-react';
+import { Search, Shield, Globe, Database, Share2, Loader2, AlertTriangle, MessageSquare, Send, Download, FileText, FileSpreadsheet, FileCode, Activity, LogIn, LogOut, Trash2, Bell, Image as ImageIcon, Film, Map as MapIcon, Volume2, Play, Upload, Eye, History, Maximize2, Minimize2 } from 'lucide-react';
 import Markdown from 'react-markdown';
 import { performIntelligenceSearch, chatIntelligence, performMapsSearch, generateIntelligenceImage, generateIntelligenceVideo, analyzeMedia, textToSpeech, expandIntelligenceNode, performForensicTool } from './services/geminiService';
 import { IntelligenceData, ChatMessage, Target, Alert } from './types';
 import Graph from './components/Graph';
 import { downloadAsPDF, downloadAsWord, downloadAsExcel } from './lib/downloadUtils';
 import { auth, db } from './firebase';
+import { Tooltip } from './components/Tooltip';
 import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User } from 'firebase/auth';
 import { collection, query as fsQuery, where, onSnapshot, addDoc, serverTimestamp, deleteDoc, doc, updateDoc, orderBy, limit } from 'firebase/firestore';
 
@@ -61,6 +62,30 @@ export default function App() {
   const [forensicResult, setForensicResult] = useState<string | null>(null);
   const [forensicLoading, setForensicLoading] = useState(false);
   const [expandingNodeId, setExpandingNodeId] = useState<string | null>(null);
+  const [showHistorySidebar, setShowHistorySidebar] = useState(false);
+
+  const [currentHistoryId, setCurrentHistoryId] = useState<string | null>(null);
+  const [isGraphFullscreen, setIsGraphFullscreen] = useState(false);
+
+  const updateHistory = async (newData?: IntelligenceData, newChatMessages?: ChatMessage[]) => {
+    if (newData) setData(newData);
+    if (newChatMessages) setChatMessages(newChatMessages);
+
+    if (user && currentHistoryId) {
+      try {
+        const updateObj: any = {};
+        if (newData) updateObj.data = newData;
+        if (newChatMessages) updateObj.chatMessages = newChatMessages;
+        
+        await updateDoc(doc(db, 'history', currentHistoryId), {
+          ...updateObj,
+          timestamp: serverTimestamp()
+        });
+      } catch (err) {
+        console.error("Failed to update history:", err);
+      }
+    }
+  };
 
   // Auth Listener
   useEffect(() => {
@@ -124,16 +149,18 @@ export default function App() {
       
       // Save to history if user is logged in
       if (user) {
-        await addDoc(collection(db, 'history'), {
+        const docRef = await addDoc(collection(db, 'history'), {
           query: query.trim(),
           data: result,
+          chatMessages: [],
           uid: user.uid,
           timestamp: serverTimestamp()
         });
+        setCurrentHistoryId(docRef.id);
       }
     } catch (err) {
       console.error(err);
-      setError('Failed to fetch intelligence data. Please try again.');
+      setError('BREACH FAILED. CONNECTION LOST.');
     } finally {
       setLoading(false);
     }
@@ -146,7 +173,7 @@ export default function App() {
       label: newNodeLabel.trim(),
       type: newNodeType
     };
-    setData({
+    updateHistory({
       ...data,
       nodes: [...data.nodes, newNode]
     });
@@ -160,7 +187,7 @@ export default function App() {
       target: targetNodeId,
       label: newLinkLabel.trim() || 'related'
     };
-    setData({
+    updateHistory({
       ...data,
       links: [...data.links, newLink]
     });
@@ -207,8 +234,9 @@ export default function App() {
   const loadHistoryItem = (item: any) => {
     setData(item.data);
     setQuery(item.query);
+    setCurrentHistoryId(item.id);
+    setChatMessages(item.chatMessages || []);
     setActiveTab('search');
-    setChatMessages([]);
   };
 
   const toggleTargetStatus = async (target: Target) => {
@@ -226,10 +254,19 @@ export default function App() {
     if (!chatInput.trim() || chatLoading) return;
 
     const userMsg: ChatMessage = { role: 'user', text: chatInput };
-    setChatMessages(prev => [...prev, userMsg]);
+    const updatedMessages = [...chatMessages, userMsg];
+    setChatMessages(updatedMessages);
     const currentInput = chatInput;
     setChatInput('');
     setChatLoading(true);
+
+    // Save user message to history immediately
+    if (user && currentHistoryId) {
+      updateDoc(doc(db, 'history', currentHistoryId), {
+        chatMessages: updatedMessages,
+        timestamp: serverTimestamp()
+      }).catch(err => console.error("Failed to save user message:", err));
+    }
 
     try {
       if (!data) {
@@ -238,18 +275,36 @@ export default function App() {
         const result = await performIntelligenceSearch(currentInput, highThinking);
         setData(result);
         
+        const finalMessages: ChatMessage[] = [...updatedMessages, { role: 'model', text: "Intelligence gathered. Analysis complete. I've generated the graph and report based on your query. How can I assist further?" }];
+        setChatMessages(finalMessages);
+
         if (user) {
-          await addDoc(collection(db, 'history'), {
+          const docRef = await addDoc(collection(db, 'history'), {
             query: currentInput.trim(),
             data: result,
+            chatMessages: finalMessages,
             uid: user.uid,
             timestamp: serverTimestamp()
           });
+          setCurrentHistoryId(docRef.id);
         }
-        setChatMessages(prev => [...prev, { role: 'model', text: "Intelligence gathered. Analysis complete. I've generated the graph and report based on your query. How can I assist further?" }]);
       } else {
         const response = await chatIntelligence(currentInput, data.context || '', chatMessages, highThinking);
-        setChatMessages(prev => [...prev, { role: 'model', text: response }]);
+        
+        let updatedData = data;
+        if (response.nodes || response.links) {
+          const newNodes = (response.nodes || []).filter(n => !data.nodes.some(en => en.id === n.id));
+          if (newNodes.length > 0 || (response.links && response.links.length > 0)) {
+            updatedData = {
+              ...data,
+              nodes: [...data.nodes, ...newNodes],
+              links: [...data.links, ...(response.links || [])]
+            };
+          }
+        }
+        
+        const finalMessages: ChatMessage[] = [...updatedMessages, { role: 'model', text: response.text }];
+        updateHistory(updatedData, finalMessages);
       }
     } catch (err) {
       console.error(err);
@@ -353,7 +408,7 @@ export default function App() {
         newLinks.push(newLink);
       });
       
-      setData({
+      updateHistory({
         ...data,
         nodes: newNodes,
         links: newLinks,
@@ -383,67 +438,83 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#050505] text-[#e0e0e0] font-mono selection:bg-[#ff4444] selection:text-black">
+    <div className="min-h-screen bg-[#050505] text-[#e0e0e0] font-mono selection:bg-[#00ff00] selection:text-black">
       {/* Header */}
       <header className="border-b border-[#1a1a1a] p-4 flex items-center justify-between bg-[#0a0a0a]">
         <div className="flex items-center gap-3">
-          <Shield className="text-[#ff4444] w-8 h-8" />
+          <Shield className="text-[#00ff00] w-8 h-8 glitch-hover" />
           <div>
-            <h1 className="text-xl font-bold tracking-tighter uppercase italic">Nexus Intelligence</h1>
-            <p className="text-[10px] text-[#666] uppercase tracking-widest">OSINT & Graph Network Analysis</p>
+            <h1 className="text-xl font-bold tracking-tighter uppercase italic glitch-hover">VOID OSINT // ANONYMOUS</h1>
+            <p className="text-[10px] text-[#666] uppercase tracking-widest">DATA EXPLOITATION & NETWORK MAPPING</p>
           </div>
         </div>
         
         <div className="flex items-center gap-6">
             <nav className="flex items-center gap-2 bg-black p-1 rounded border border-[#1a1a1a]">
-            <button 
-              onClick={() => setActiveTab('search')}
-              className={`px-4 py-1.5 rounded text-[10px] font-bold uppercase transition-all ${activeTab === 'search' ? 'bg-[#ff4444] text-black' : 'text-[#666] hover:text-[#eee]'}`}
-            >
-              Search
-            </button>
-            <button 
-              onClick={() => setActiveTab('multimedia')}
-              className={`px-4 py-1.5 rounded text-[10px] font-bold uppercase transition-all ${activeTab === 'multimedia' ? 'bg-[#ff4444] text-black' : 'text-[#666] hover:text-[#eee]'}`}
-            >
-              Multimedia Lab
-            </button>
-            <button 
-              onClick={() => setActiveTab('maps')}
-              className={`px-4 py-1.5 rounded text-[10px] font-bold uppercase transition-all ${activeTab === 'maps' ? 'bg-[#ff4444] text-black' : 'text-[#666] hover:text-[#eee]'}`}
-            >
-              Maps Intel
-            </button>
-            <button 
-              onClick={() => setActiveTab('monitor')}
-              className={`px-4 py-1.5 rounded text-[10px] font-bold uppercase transition-all ${activeTab === 'monitor' ? 'bg-[#ff4444] text-black' : 'text-[#666] hover:text-[#eee]'}`}
-            >
-              Monitoring
-            </button>
-            <button 
-              onClick={() => setActiveTab('database')}
-              className={`px-4 py-1.5 rounded text-[10px] font-bold uppercase transition-all ${activeTab === 'database' ? 'bg-[#ff4444] text-black' : 'text-[#666] hover:text-[#eee]'}`}
-            >
-              Database
-            </button>
-            <button 
-              onClick={() => setActiveTab('forensics')}
-              className={`px-4 py-1.5 rounded text-[10px] font-bold uppercase transition-all ${activeTab === 'forensics' ? 'bg-[#ff4444] text-black' : 'text-[#666] hover:text-[#eee]'}`}
-            >
-              Forensics
-            </button>
+            <Tooltip text="INTELLIGENCE SEARCH">
+              <button 
+                onClick={() => setActiveTab('search')}
+                className={`px-4 py-1.5 rounded text-[10px] font-bold uppercase transition-all ${activeTab === 'search' ? 'bg-[#00ff00] text-black' : 'text-[#666] hover:text-[#eee]'}`}
+              >
+                INFILTRATE
+              </button>
+            </Tooltip>
+            <Tooltip text="MULTIMEDIA EXFILTRATION">
+              <button 
+                onClick={() => setActiveTab('multimedia')}
+                className={`px-4 py-1.5 rounded text-[10px] font-bold uppercase transition-all ${activeTab === 'multimedia' ? 'bg-[#00ff00] text-black' : 'text-[#666] hover:text-[#eee]'}`}
+              >
+                EXFILTRATION
+              </button>
+            </Tooltip>
+            <Tooltip text="GEOSPATIAL INTELLIGENCE">
+              <button 
+                onClick={() => setActiveTab('maps')}
+                className={`px-4 py-1.5 rounded text-[10px] font-bold uppercase transition-all ${activeTab === 'maps' ? 'bg-[#00ff00] text-black' : 'text-[#666] hover:text-[#eee]'}`}
+              >
+                GEOLOCATION
+              </button>
+            </Tooltip>
+            <Tooltip text="REAL-TIME SURVEILLANCE">
+              <button 
+                onClick={() => setActiveTab('monitor')}
+                className={`px-4 py-1.5 rounded text-[10px] font-bold uppercase transition-all ${activeTab === 'monitor' ? 'bg-[#00ff00] text-black' : 'text-[#666] hover:text-[#eee]'}`}
+              >
+                SURVEILLANCE
+              </button>
+            </Tooltip>
+            <Tooltip text="DATABASE ARCHIVE">
+              <button 
+                onClick={() => setActiveTab('database')}
+                className={`px-4 py-1.5 rounded text-[10px] font-bold uppercase transition-all ${activeTab === 'database' ? 'bg-[#00ff00] text-black' : 'text-[#666] hover:text-[#eee]'}`}
+              >
+                ARCHIVE
+              </button>
+            </Tooltip>
+            <Tooltip text="SYSTEM EXPLOITATION">
+              <button 
+                onClick={() => setActiveTab('forensics')}
+                className={`px-4 py-1.5 rounded text-[10px] font-bold uppercase transition-all ${activeTab === 'forensics' ? 'bg-[#00ff00] text-black' : 'text-[#666] hover:text-[#eee]'}`}
+              >
+                EXPLOITATION
+              </button>
+            </Tooltip>
           </nav>
 
           <div className="flex items-center gap-4 text-[10px] text-[#444] border-l border-[#1a1a1a] pl-6">
             {user ? (
               <div className="flex items-center gap-3">
-                <img src={user.photoURL || ''} className="w-6 h-6 rounded-full border border-[#333]" alt="User" />
-                <button onClick={handleLogout} className="hover:text-[#ff4444] transition-colors uppercase font-bold">Disconnect</button>
+                <img src={user.photoURL || ''} className="w-6 h-6 rounded-full border border-[#333]" alt="User" referrerPolicy="no-referrer" />
+                <Tooltip text="DISCONNECT FROM SYSTEM">
+                  <button onClick={handleLogout} className="hover:text-[#00ff00] transition-colors uppercase font-bold">DISCONNECT</button>
+                </Tooltip>
               </div>
             ) : (
-              <button onClick={handleLogin} className="flex items-center gap-2 hover:text-[#eee] transition-colors uppercase font-bold">
-                <LogIn size={14} /> Connect Operator
-              </button>
+              <Tooltip text="AUTHENTICATE OPERATOR">
+                <button onClick={handleLogin} className="flex items-center gap-2 hover:text-[#00ff00] transition-colors uppercase font-bold">
+                  <LogIn size={14} /> CONNECT OPERATOR
+                </button>
+              </Tooltip>
             )}
           </div>
         </div>
@@ -456,13 +527,13 @@ export default function App() {
             {!data && (
               <div className="lg:col-span-12 flex flex-col items-center justify-center min-h-[600px] space-y-8 animate-in fade-in zoom-in-95 duration-500">
                 <div className="relative">
-                  <div className="absolute -inset-4 bg-[#ff4444]/5 blur-3xl rounded-full animate-pulse" />
-                  <Shield className="text-[#ff4444] w-24 h-24 relative" strokeWidth={1} />
+                  <div className="absolute -inset-4 bg-[#00ff00]/5 blur-3xl rounded-full animate-pulse" />
+                  <Shield className="text-[#00ff00] w-24 h-24 relative glitch-hover" strokeWidth={1} />
                 </div>
                 
                 <div className="text-center space-y-2">
-                  <h2 className="text-2xl font-bold tracking-[0.3em] uppercase italic text-[#eee]">Nexus Intelligence System</h2>
-                  <p className="text-[10px] text-[#444] uppercase tracking-[0.5em]">Awaiting Operator Input // Encrypted Session</p>
+                  <h2 className="text-2xl font-bold tracking-[0.3em] uppercase italic text-[#eee] glitch-hover">VOID OSINT // ANONYMOUS</h2>
+                  <p className="text-[10px] text-[#00ff00] uppercase tracking-[0.5em] font-bold">AWAITING OPERATOR INPUT // BREACH READY</p>
                 </div>
 
                 <div className="w-full max-w-2xl space-y-6">
@@ -471,41 +542,46 @@ export default function App() {
                       type="text"
                       value={chatInput}
                       onChange={(e) => setChatInput(e.target.value)}
-                      placeholder="DESCRIBE YOUR TARGET OR INTELLIGENCE GOAL..."
-                      className="w-full bg-[#0a0a0a] border border-[#333] p-6 pl-14 rounded-lg focus:outline-none focus:border-[#ff4444] transition-all text-lg tracking-tight placeholder:text-[#222]"
+                      placeholder="DESCRIBE YOUR TARGET OR DATA BREACH GOAL..."
+                      className="w-full bg-[#0a0a0a] border border-[#333] p-6 pl-14 pr-36 rounded-lg focus:outline-none focus:border-[#00ff00] transition-all text-lg tracking-tight placeholder:text-[#111]"
                     />
-                    <MessageSquare className="absolute left-6 top-1/2 -translate-y-1/2 text-[#333] group-focus-within:text-[#ff4444] transition-colors" />
-                    <button
-                      disabled={chatLoading || !chatInput.trim()}
-                      className="absolute right-4 top-1/2 -translate-y-1/2 bg-[#ff4444] text-black px-6 py-2 rounded font-bold hover:bg-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {chatLoading ? <Loader2 className="animate-spin" /> : 'INITIATE'}
-                    </button>
+                    <MessageSquare className="absolute left-6 top-1/2 -translate-y-1/2 text-[#333] group-focus-within:text-[#00ff00] transition-colors" />
+                    <Tooltip text="START DATA BREACH">
+                      <button
+                        disabled={chatLoading || !chatInput.trim()}
+                        className="absolute right-4 top-1/2 -translate-y-1/2 bg-[#00ff00] text-black px-6 py-2 rounded font-bold hover:bg-[#00ff00]/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {chatLoading ? <Loader2 className="animate-spin" /> : 'INITIATE'}
+                      </button>
+                    </Tooltip>
                   </form>
 
                   <div className="flex items-center justify-center gap-8">
-                    <label className="flex items-center gap-3 cursor-pointer group">
-                      <div className="relative">
-                        <input
-                          type="checkbox"
-                          className="sr-only"
-                          checked={highThinking}
-                          onChange={(e) => setHighThinking(e.target.checked)}
-                        />
-                        <div className={`w-10 h-5 rounded-full border border-[#333] transition-colors ${highThinking ? 'bg-[#ff4444]/20 border-[#ff4444]' : 'bg-[#0a0a0a]'}`} />
-                        <div className={`absolute top-1 left-1 w-3 h-3 rounded-full transition-all ${highThinking ? 'translate-x-5 bg-[#ff4444]' : 'bg-[#333]'}`} />
-                      </div>
-                      <span className={`text-[10px] font-bold uppercase tracking-widest transition-colors ${highThinking ? 'text-[#ff4444]' : 'text-[#666]'}`}>
-                        Deep Intelligence Mode (Thinking v3.1)
-                      </span>
-                    </label>
+                    <Tooltip text="ENABLE ADVANCED REASONING">
+                      <label className="flex items-center gap-3 cursor-pointer group">
+                        <div className="relative">
+                          <input
+                            type="checkbox"
+                            className="sr-only"
+                            checked={highThinking}
+                            onChange={(e) => setHighThinking(e.target.checked)}
+                          />
+                          <div className={`w-10 h-5 rounded-full border border-[#333] transition-colors ${highThinking ? 'bg-[#00ff00]/20 border-[#00ff00]' : 'bg-[#0a0a0a]'}`} />
+                          <div className={`absolute top-1 left-1 w-3 h-3 rounded-full transition-all ${highThinking ? 'translate-x-5 bg-[#00ff00]' : 'bg-[#333]'}`} />
+                        </div>
+                        <span className={`text-[10px] font-bold uppercase tracking-widest transition-colors ${highThinking ? 'text-[#00ff00]' : 'text-[#666]'}`}>
+                          DEEP EXPLOITATION MODE
+                        </span>
+                      </label>
+                    </Tooltip>
                   </div>
                 </div>
 
                 {error && (
-                  <div className="w-full max-w-2xl bg-[#ff4444]/10 border border-[#ff4444] p-4 rounded flex items-center gap-3 text-[#ff4444]">
+                  <div className="w-full max-w-2xl bg-[#00ff00]/10 border border-[#00ff00] p-4 rounded flex items-center gap-3 text-[#00ff00]">
                     <AlertTriangle size={20} />
-                    <span className="text-xs uppercase tracking-widest">{error}</span>
+                    <span className="text-xs uppercase tracking-widest font-bold">{error}</span>
+                    <div className="w-2 h-2 rounded-full bg-[#00ff00] animate-pulse ml-auto" />
                   </div>
                 )}
               </div>
@@ -516,80 +592,126 @@ export default function App() {
                 {/* Header for Active Session */}
                 <div className="lg:col-span-12 flex items-center justify-between bg-[#0a0a0a] border border-[#333] p-4 rounded-lg">
                   <div className="flex items-center gap-4">
-                    <div className="w-2 h-2 rounded-full bg-[#ff4444] animate-pulse" />
-                    <span className="text-[10px] font-bold uppercase text-[#eee]">Active Intelligence Session: {query}</span>
+                    <div className="w-2 h-2 rounded-full bg-[#00ff00] animate-pulse" />
+                    <span className="text-[10px] font-bold uppercase text-[#eee] tracking-widest">ACTIVE BREACH SESSION: {query}</span>
                   </div>
                   <div className="flex items-center gap-4">
-                    <label className="flex items-center gap-3 cursor-pointer group">
-                      <div className="relative">
-                        <input
-                          type="checkbox"
-                          className="sr-only"
-                          checked={highThinking}
-                          onChange={(e) => setHighThinking(e.target.checked)}
-                        />
-                        <div className={`w-8 h-4 rounded-full border border-[#333] transition-colors ${highThinking ? 'bg-[#ff4444]/20 border-[#ff4444]' : 'bg-[#0a0a0a]'}`} />
-                        <div className={`absolute top-0.5 left-0.5 w-2.5 h-2.5 rounded-full transition-all ${highThinking ? 'translate-x-4 bg-[#ff4444]' : 'bg-[#333]'}`} />
-                      </div>
-                      <span className={`text-[9px] font-bold uppercase tracking-widest transition-colors ${highThinking ? 'text-[#ff4444]' : 'text-[#666]'}`}>
-                        Deep Mode
-                      </span>
-                    </label>
+                    <Tooltip text="VIEW PREVIOUS BREACHES">
+                      <button 
+                        onClick={() => setShowHistorySidebar(!showHistorySidebar)}
+                        className={`flex items-center gap-2 text-[9px] font-bold uppercase border px-3 py-1 rounded transition-all ${showHistorySidebar ? 'bg-[#00ff00] text-black border-[#00ff00]' : 'text-[#666] border-[#333] hover:border-[#00ff00]'}`}
+                      >
+                        <History size={12} />
+                        {showHistorySidebar ? 'CLOSE ARCHIVE' : 'OPEN ARCHIVE'}
+                      </button>
+                    </Tooltip>
+                    <Tooltip text="ENABLE ADVANCED REASONING">
+                      <label className="flex items-center gap-3 cursor-pointer group">
+                        <div className="relative">
+                          <input
+                            type="checkbox"
+                            className="sr-only"
+                            checked={highThinking}
+                            onChange={(e) => setHighThinking(e.target.checked)}
+                          />
+                          <div className={`w-8 h-4 rounded-full border border-[#333] transition-colors ${highThinking ? 'bg-[#00ff00]/20 border-[#00ff00]' : 'bg-[#0a0a0a]'}`} />
+                          <div className={`absolute top-0.5 left-0.5 w-2.5 h-2.5 rounded-full transition-all ${highThinking ? 'translate-x-4 bg-[#00ff00]' : 'bg-[#333]'}`} />
+                        </div>
+                        <span className={`text-[9px] font-bold uppercase tracking-widest transition-colors ${highThinking ? 'text-[#00ff00]' : 'text-[#666]'}`}>
+                          DEEP EXPLOITATION
+                        </span>
+                      </label>
+                    </Tooltip>
                     {user && (
                       <button 
                         onClick={startMonitoring}
                         disabled={monitoringLoading}
-                        className="flex items-center gap-2 text-[9px] font-bold uppercase text-[#ff4444] border border-[#ff4444]/30 px-3 py-1 rounded hover:bg-[#ff4444] hover:text-black transition-all"
+                        className="flex items-center gap-2 text-[9px] font-bold uppercase text-[#00ff00] border border-[#00ff00]/30 px-3 py-1 rounded hover:bg-[#00ff00] hover:text-black transition-all"
                       >
                         {monitoringLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Activity size={12} />}
-                        Monitor
+                        SURVEILLANCE
                       </button>
                     )}
                   </div>
                 </div>
 
-                {error && (
-                  <div className="lg:col-span-12 bg-[#ff4444]/10 border border-[#ff4444] p-4 rounded flex items-center gap-3 text-[#ff4444]">
-                    <AlertTriangle size={20} />
-                    <span>{error}</span>
-                  </div>
-                )}
+                <div className="lg:col-span-12 bg-[#00ff00]/10 border border-[#00ff00] p-4 rounded flex items-center gap-3 text-[#00ff00]">
+                  <AlertTriangle size={20} />
+                  <span className="text-xs uppercase tracking-widest font-bold">{error}</span>
+                  <div className="w-2 h-2 rounded-full bg-[#00ff00] animate-pulse ml-auto" />
+                </div>
 
-                {/* Graph Visualization */}
-                <div className="lg:col-span-7 h-[600px] relative flex flex-col gap-4">
-                  <div className="flex-1 relative bg-[#0a0a0a] border border-[#333] rounded-lg overflow-hidden">
+                <div className={`lg:col-span-12 grid grid-cols-1 lg:grid-cols-12 gap-6 transition-all duration-300 ${showHistorySidebar ? 'lg:grid-cols-[250px_1fr]' : ''}`}>
+                  {showHistorySidebar && (
+                    <div className="lg:col-span-1 bg-[#0a0a0a] border border-[#333] rounded-lg p-4 h-[600px] overflow-y-auto custom-scrollbar animate-in slide-in-from-left-4 duration-300">
+                      <h3 className="text-[10px] font-bold text-[#666] uppercase mb-4 flex items-center gap-2 tracking-widest">
+                        <History size={12} /> BREACH ARCHIVE
+                      </h3>
+                      <div className="space-y-2">
+                        {history.map(item => (
+                          <Tooltip key={item.id} text={`LOAD BREACH: ${item.query.toUpperCase()}`}>
+                            <div 
+                              onClick={() => loadHistoryItem(item)}
+                              className={`p-3 rounded border transition-all cursor-pointer group ${currentHistoryId === item.id ? 'bg-[#00ff00]/10 border-[#00ff00] text-[#00ff00]' : 'bg-[#111] border-[#222] text-[#666] hover:border-[#00ff00]'}`}
+                            >
+                              <div className="text-[10px] font-bold truncate mb-1 group-hover:text-[#eee]">{item.query}</div>
+                              <div className="flex items-center justify-between text-[8px] uppercase tracking-tighter opacity-50">
+                                <span>{item.timestamp?.toDate().toLocaleDateString()}</span>
+                                <span className="group-hover:text-[#00ff00]">{(item.data?.nodes?.length || 0)}N</span>
+                              </div>
+                            </div>
+                          </Tooltip>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className={`${showHistorySidebar ? 'lg:col-span-11' : 'lg:col-span-12'} grid grid-cols-1 lg:grid-cols-12 gap-6`}>
+                    {/* Graph Visualization */}
+                    <div className="lg:col-span-7 h-[600px] relative flex flex-col gap-4">
+                  <div className={`${isGraphFullscreen ? 'fixed inset-0 z-[100] p-4 bg-[#050505]' : 'flex-1 relative'} bg-[#0a0a0a] border border-[#333] rounded-lg overflow-hidden transition-all duration-300`}>
                     <div className="absolute top-4 left-4 z-10 bg-black/80 p-2 border border-[#333] rounded text-[10px] text-[#666] space-y-1">
-                      <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-[#ff4444]" /> TARGET</div>
-                      <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-[#44ff44]" /> EMAIL</div>
-                      <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-[#4444ff]" /> DOMAIN</div>
-                      <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-[#ffff44]" /> SOCIAL</div>
-                      <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-[#ff44ff]" /> LEAK</div>
-                      <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-[#ffaa00]" /> PERSON</div>
-                      <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-[#00ffff]" /> COMPANY</div>
-                      <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-[#ff00ff]" /> POLITICAL</div>
+                      <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-[#00ff00]" /> TARGET</div>
+                      <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-[#00ff00]" /> EMAIL</div>
+                      <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-[#00ff00]" /> DOMAIN</div>
+                      <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-[#00ff00]" /> SOCIAL</div>
+                      <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-[#00ff00]" /> LEAK</div>
+                      <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-[#00ff00]" /> PERSON</div>
+                      <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-[#00ff00]" /> COMPANY</div>
+                      <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-[#00ff00]" /> POLITICAL</div>
                       <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-[#00ff00]" /> FINANCIAL</div>
                     </div>
                     
                     <div className="absolute top-4 right-4 z-10 flex flex-col gap-2">
-                      <button 
-                        onClick={() => setShowEditor(!showEditor)}
-                        className={`p-2 rounded border transition-all ${showEditor ? 'bg-[#ff4444] text-black border-[#ff4444]' : 'bg-black text-[#666] border-[#333] hover:border-[#ff4444]'}`}
-                        title="Toggle Graph Editor"
-                      >
-                        <Share2 size={16} />
-                      </button>
-                      {selectedNodeId && (
+                      <Tooltip text={isGraphFullscreen ? "EXIT FULLSCREEN" : "FULLSCREEN MODE"}>
                         <button 
-                          onClick={() => {
-                            const node = data.nodes.find(n => n.id === selectedNodeId);
-                            if (node) handleExpandNode(node.id, node.label);
-                          }}
-                          disabled={!!expandingNodeId}
-                          className={`p-2 rounded border transition-all ${expandingNodeId === selectedNodeId ? 'bg-[#ff4444] text-black border-[#ff4444]' : 'bg-black text-[#ff4444] border-[#333] hover:border-[#ff4444]'}`}
-                          title="Expand Node Intelligence"
+                          onClick={() => setIsGraphFullscreen(!isGraphFullscreen)}
+                          className="p-2 rounded border border-[#333] bg-black text-[#666] hover:border-[#00ff00] hover:text-[#00ff00] transition-all"
                         >
-                          {expandingNodeId === selectedNodeId ? <Loader2 size={16} className="animate-spin" /> : <Activity size={16} />}
+                          {isGraphFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
                         </button>
+                      </Tooltip>
+                      <Tooltip text="TOGGLE GRAPH EDITOR">
+                        <button 
+                          onClick={() => setShowEditor(!showEditor)}
+                          className={`p-2 rounded border transition-all ${showEditor ? 'bg-[#00ff00] text-black border-[#00ff00]' : 'bg-black text-[#666] border-[#333] hover:border-[#00ff00]'}`}
+                        >
+                          <Share2 size={16} />
+                        </button>
+                      </Tooltip>
+                      {selectedNodeId && (
+                        <Tooltip text="EXPAND NODE INTELLIGENCE">
+                          <button 
+                            onClick={() => {
+                              const node = data.nodes.find(n => n.id === selectedNodeId);
+                              if (node) handleExpandNode(node.id, node.label);
+                            }}
+                            disabled={!!expandingNodeId}
+                            className={`p-2 rounded border transition-all ${expandingNodeId === selectedNodeId ? 'bg-[#00ff00] text-black border-[#00ff00]' : 'bg-black text-[#00ff00] border-[#333] hover:border-[#00ff00]'}`}
+                          >
+                            {expandingNodeId === selectedNodeId ? <Loader2 size={16} className="animate-spin" /> : <Activity size={16} />}
+                          </button>
+                        </Tooltip>
                       )}
                     </div>
 
@@ -612,7 +734,7 @@ export default function App() {
                             value={newNodeLabel}
                             onChange={(e) => setNewNodeLabel(e.target.value)}
                             placeholder="NAME/LABEL..."
-                            className="flex-1 bg-black border border-[#222] p-2 text-[10px] focus:border-[#ff4444] outline-none"
+                            className="flex-1 bg-black border border-[#222] p-2 text-[10px] focus:border-[#00ff00] outline-none"
                           />
                           <select 
                             value={newNodeType}
@@ -626,12 +748,14 @@ export default function App() {
                             <option value="social">SOCIAL</option>
                             <option value="email">EMAIL</option>
                           </select>
-                          <button 
-                            onClick={addCustomNode}
-                            className="bg-[#333] hover:bg-[#ff4444] text-white px-3 rounded transition-colors"
-                          >
-                            +
-                          </button>
+                          <Tooltip text="ADD CUSTOM ENTITY">
+                            <button 
+                              onClick={addCustomNode}
+                              className="bg-[#333] hover:bg-[#00ff00] text-[#eee] px-3 rounded transition-colors"
+                            >
+                              +
+                            </button>
+                          </Tooltip>
                         </div>
                       </div>
 
@@ -646,7 +770,7 @@ export default function App() {
                             value={newLinkLabel}
                             onChange={(e) => setNewLinkLabel(e.target.value)}
                             placeholder="RELATIONSHIP (e.g. SON, CEO)..."
-                            className="flex-1 bg-black border border-[#222] p-2 text-[10px] focus:border-[#ff4444] outline-none"
+                            className="flex-1 bg-black border border-[#222] p-2 text-[10px] focus:border-[#00ff00] outline-none"
                           />
                           <select 
                             value={targetNodeId}
@@ -658,13 +782,15 @@ export default function App() {
                               <option key={n.id} value={n.id}>{n.label}</option>
                             ))}
                           </select>
-                          <button 
-                            onClick={addCustomLink}
-                            disabled={!selectedNodeId || !targetNodeId}
-                            className="bg-[#333] hover:bg-[#ff4444] text-white px-3 rounded transition-colors disabled:opacity-30"
-                          >
-                            LINK
-                          </button>
+                          <Tooltip text="ESTABLISH RELATIONSHIP">
+                            <button 
+                              onClick={addCustomLink}
+                              disabled={!selectedNodeId || !targetNodeId}
+                              className="bg-[#333] hover:bg-[#00ff00] text-[#eee] px-3 rounded transition-colors disabled:opacity-30"
+                            >
+                              LINK
+                            </button>
+                          </Tooltip>
                         </div>
                       </div>
                     </div>
@@ -680,43 +806,47 @@ export default function App() {
                         <Database size={14} /> Intelligence Report
                       </h2>
                       <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button 
-                          onClick={() => handleTTS(data.report)}
-                          disabled={ttsLoading}
-                          title="Listen to Report"
-                          className="p-1.5 bg-[#111] border border-[#222] hover:border-[#ff4444] rounded text-[#666] hover:text-[#ff4444] transition-all"
-                        >
-                          {ttsLoading ? <Loader2 size={12} className="animate-spin" /> : <Volume2 size={12} />}
-                        </button>
-                        <button 
-                          onClick={() => downloadAsPDF(data)}
-                          title="Download PDF"
-                          className="p-1.5 bg-[#111] border border-[#222] hover:border-[#ff4444] rounded text-[#666] hover:text-[#ff4444] transition-all"
-                        >
-                          <FileText size={12} />
-                        </button>
-                        <button 
-                          onClick={() => downloadAsWord(data)}
-                          title="Download Word"
-                          className="p-1.5 bg-[#111] border border-[#222] hover:border-[#4444ff] rounded text-[#666] hover:text-[#4444ff] transition-all"
-                        >
-                          <FileCode size={12} />
-                        </button>
-                        <button 
-                          onClick={() => downloadAsExcel(data)}
-                          title="Download Excel"
-                          className="p-1.5 bg-[#111] border border-[#222] hover:border-[#44ff44] rounded text-[#666] hover:text-[#44ff44] transition-all"
-                        >
-                          <FileSpreadsheet size={12} />
-                        </button>
+                        <Tooltip text="LISTEN TO REPORT">
+                          <button 
+                            onClick={() => handleTTS(data.report)}
+                            disabled={ttsLoading}
+                            className="p-1.5 bg-[#111] border border-[#222] hover:border-[#00ff00] rounded text-[#666] hover:text-[#00ff00] transition-all"
+                          >
+                            {ttsLoading ? <Loader2 size={12} className="animate-spin" /> : <Volume2 size={12} />}
+                          </button>
+                        </Tooltip>
+                        <Tooltip text="DOWNLOAD PDF">
+                          <button 
+                            onClick={() => downloadAsPDF(data)}
+                            className="p-1.5 bg-[#111] border border-[#222] hover:border-[#00ff00] rounded text-[#666] hover:text-[#00ff00] transition-all"
+                          >
+                            <FileText size={12} />
+                          </button>
+                        </Tooltip>
+                        <Tooltip text="DOWNLOAD WORD">
+                          <button 
+                            onClick={() => downloadAsWord(data)}
+                            className="p-1.5 bg-[#111] border border-[#222] hover:border-[#4444ff] rounded text-[#666] hover:text-[#4444ff] transition-all"
+                          >
+                            <FileCode size={12} />
+                          </button>
+                        </Tooltip>
+                        <Tooltip text="DOWNLOAD EXCEL">
+                          <button 
+                            onClick={() => downloadAsExcel(data)}
+                            className="p-1.5 bg-[#111] border border-[#222] hover:border-[#44ff44] rounded text-[#666] hover:text-[#44ff44] transition-all"
+                          >
+                            <FileSpreadsheet size={12} />
+                          </button>
+                        </Tooltip>
                       </div>
                     </div>
-                    <div className="prose prose-invert prose-sm max-w-none prose-headings:text-[#ff4444] prose-a:text-[#4444ff]">
+                    <div className="prose prose-invert prose-sm max-w-none prose-headings:text-[#00ff00] prose-a:text-[#00ff00]">
                       <Markdown>{data.report}</Markdown>
                     </div>
                     {audioUrl && (
                       <div className="mt-4 p-2 bg-black border border-[#222] rounded flex items-center gap-3">
-                        <Play size={14} className="text-[#ff4444]" />
+                        <Play size={14} className="text-[#00ff00]" />
                         <audio src={audioUrl} controls className="h-8 flex-1 invert" autoPlay />
                       </div>
                     )}
@@ -741,13 +871,13 @@ export default function App() {
                         <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                           <div className={`max-w-[85%] p-3 rounded text-[11px] ${
                             msg.role === 'user' 
-                              ? 'bg-[#ff4444]/10 border border-[#ff4444]/30 text-[#eee]' 
+                              ? 'bg-[#00ff00]/10 border border-[#00ff00]/30 text-[#eee]' 
                               : 'bg-[#111] border border-[#222] text-[#aaa]'
                           }`}>
                             <div className="text-[9px] uppercase font-bold mb-1 opacity-50">
-                              {msg.role === 'user' ? 'Operator' : 'Nexus AI'}
+                              {msg.role === 'user' ? 'OPERATOR' : 'VOID AI'}
                             </div>
-                            <div className="prose prose-invert prose-xs">
+                            <div className="prose prose-invert prose-xs prose-headings:text-[#00ff00] prose-a:text-[#00ff00]">
                               <Markdown>{msg.text}</Markdown>
                             </div>
                           </div>
@@ -756,7 +886,7 @@ export default function App() {
                       {chatLoading && (
                         <div className="flex justify-start">
                           <div className="bg-[#111] border border-[#222] p-3 rounded">
-                            <Loader2 className="w-4 h-4 animate-spin text-[#ff4444]" />
+                            <Loader2 className="w-4 h-4 animate-spin text-[#00ff00]" />
                           </div>
                         </div>
                       )}
@@ -768,15 +898,17 @@ export default function App() {
                         value={chatInput}
                         onChange={(e) => setChatInput(e.target.value)}
                         placeholder="ASK ANALYST..."
-                        className="flex-1 bg-black border border-[#222] p-2 text-[11px] focus:outline-none focus:border-[#ff4444] transition-colors"
+                        className="flex-1 bg-black border border-[#222] p-2 text-[11px] focus:outline-none focus:border-[#00ff00] transition-colors"
                       />
-                      <button 
-                        type="submit"
-                        disabled={chatLoading || !chatInput.trim()}
-                        className="bg-[#ff4444] text-black p-2 rounded hover:bg-white transition-colors disabled:opacity-50"
-                      >
-                        <Send size={14} />
-                      </button>
+                      <Tooltip text="SEND MESSAGE">
+                        <button 
+                          type="submit"
+                          disabled={chatLoading || !chatInput.trim()}
+                          className="bg-[#00ff00] text-black p-2 rounded hover:bg-[#00ff00]/80 transition-colors disabled:opacity-50"
+                        >
+                          <Send size={14} />
+                        </button>
+                      </Tooltip>
                     </form>
                   </div>
 
@@ -787,25 +919,28 @@ export default function App() {
                     </h2>
                     <div className="space-y-3">
                       {data.sources.length > 0 ? data.sources.map((source, i) => (
-                        <a
-                          key={i}
-                          href={source.uri}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="block p-3 bg-[#111] border border-[#222] hover:border-[#444] transition-colors rounded text-[11px]"
-                        >
-                          <div className="text-[#eee] font-bold truncate">{source.title}</div>
-                          <div className="text-[#444] truncate">{source.uri}</div>
-                        </a>
+                        <Tooltip key={i} text={`OPEN SOURCE: ${source.title.toUpperCase()}`}>
+                          <a
+                            href={source.uri}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="block p-3 bg-[#111] border border-[#222] hover:border-[#444] transition-colors rounded text-[11px]"
+                          >
+                            <div className="text-[#eee] font-bold truncate">{source.title}</div>
+                            <div className="text-[#444] truncate">{source.uri}</div>
+                          </a>
+                        </Tooltip>
                       )) : (
                         <p className="text-[#333] italic text-xs">No external sources identified.</p>
                       )}
                     </div>
                   </div>
                 </div>
-              </>
-            )}
-          </div>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
         ) : activeTab === 'multimedia' ? (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             <div className="lg:col-span-4 space-y-6">
@@ -816,46 +951,56 @@ export default function App() {
                 <div className="space-y-4">
                   <div>
                     <label className="text-[10px] text-[#444] uppercase mb-2 block">Intelligence Prompt</label>
-                    <textarea 
-                      value={mmPrompt}
-                      onChange={(e) => setMmPrompt(e.target.value)}
-                      placeholder="Describe the visual evidence or scenario..."
-                      className="w-full bg-black border border-[#222] p-3 text-xs focus:border-[#ff4444] outline-none h-24 resize-none"
-                    />
+                    <Tooltip text="DESCRIBE VISUAL EVIDENCE">
+                      <textarea 
+                        value={mmPrompt}
+                        onChange={(e) => setMmPrompt(e.target.value)}
+                        placeholder="DESCRIBE THE VISUAL EVIDENCE OR SCENARIO..."
+                        className="w-full bg-black border border-[#222] p-3 text-xs focus:border-[#00ff00] outline-none h-24 resize-none"
+                      />
+                    </Tooltip>
                   </div>
                   <div className="flex gap-2">
-                    <button 
-                      onClick={handleGenerateImage}
-                      disabled={mmLoading}
-                      className="flex-1 bg-[#111] border border-[#222] hover:border-[#ff4444] p-3 rounded text-[10px] font-bold uppercase flex items-center justify-center gap-2 transition-all"
-                    >
-                      {mmLoading ? <Loader2 size={14} className="animate-spin" /> : <ImageIcon size={14} />}
-                      Gen Image
-                    </button>
-                    <button 
-                      onClick={handleGenerateVideo}
-                      disabled={mmLoading}
-                      className="flex-1 bg-[#111] border border-[#222] hover:border-[#ff4444] p-3 rounded text-[10px] font-bold uppercase flex items-center justify-center gap-2 transition-all"
-                    >
-                      {mmLoading ? <Loader2 size={14} className="animate-spin" /> : <Film size={14} />}
-                      Gen Video
-                    </button>
+                    <Tooltip text="GENERATE IMAGE EVIDENCE">
+                      <button 
+                        onClick={handleGenerateImage}
+                        disabled={mmLoading}
+                        className="flex-1 bg-[#111] border border-[#222] hover:border-[#00ff00] p-3 rounded text-[10px] font-bold uppercase flex items-center justify-center gap-2 transition-all"
+                      >
+                        {mmLoading ? <Loader2 size={14} className="animate-spin" /> : <ImageIcon size={14} />}
+                        GEN IMAGE
+                      </button>
+                    </Tooltip>
+                    <Tooltip text="GENERATE VIDEO EVIDENCE">
+                      <button 
+                        onClick={handleGenerateVideo}
+                        disabled={mmLoading}
+                        className="flex-1 bg-[#111] border border-[#222] hover:border-[#00ff00] p-3 rounded text-[10px] font-bold uppercase flex items-center justify-center gap-2 transition-all"
+                      >
+                        {mmLoading ? <Loader2 size={14} className="animate-spin" /> : <Film size={14} />}
+                        GEN VIDEO
+                      </button>
+                    </Tooltip>
                   </div>
                   <div className="border-t border-[#1a1a1a] pt-4">
                     <label className="text-[10px] text-[#444] uppercase mb-2 block">Forensic Analysis</label>
                     <div className="flex gap-2">
-                      <label className="flex-1 bg-[#111] border border-[#222] hover:border-[#eee] p-3 rounded text-[10px] font-bold uppercase flex items-center justify-center gap-2 cursor-pointer transition-all">
-                        <Upload size={14} />
-                        {selectedFile ? selectedFile.name.slice(0, 10) + '...' : 'Upload File'}
-                        <input type="file" className="hidden" onChange={(e) => setSelectedFile(e.target.files?.[0] || null)} />
-                      </label>
-                      <button 
-                        onClick={handleAnalyzeMedia}
-                        disabled={mmLoading || !selectedFile}
-                        className="bg-[#ff4444] text-black px-4 rounded font-bold uppercase text-[10px] disabled:opacity-50"
-                      >
-                        Analyze
-                      </button>
+                      <Tooltip text="UPLOAD FILE FOR ANALYSIS">
+                        <label className="flex-1 bg-[#111] border border-[#222] hover:border-[#eee] p-3 rounded text-[10px] font-bold uppercase flex items-center justify-center gap-2 cursor-pointer transition-all">
+                          <Upload size={14} />
+                          {selectedFile ? selectedFile.name.slice(0, 10) + '...' : 'Upload File'}
+                          <input type="file" className="hidden" onChange={(e) => setSelectedFile(e.target.files?.[0] || null)} />
+                        </label>
+                      </Tooltip>
+                      <Tooltip text="RUN FORENSIC ANALYSIS">
+                        <button 
+                          onClick={handleAnalyzeMedia}
+                          disabled={mmLoading || !selectedFile}
+                          className="bg-[#00ff00] text-black px-4 rounded font-bold uppercase text-[10px] disabled:opacity-50"
+                        >
+                          ANALYZE
+                        </button>
+                      </Tooltip>
                     </div>
                   </div>
                 </div>
@@ -871,8 +1016,8 @@ export default function App() {
                 )}
                 {mmLoading && (
                   <div className="flex flex-col items-center gap-4">
-                    <Loader2 size={48} className="animate-spin text-[#ff4444]" />
-                    <p className="text-[10px] text-[#666] uppercase animate-pulse">Processing Neural Evidence...</p>
+                    <Loader2 size={48} className="animate-spin text-[#00ff00]" />
+                    <p className="text-[10px] text-[#666] uppercase animate-pulse">PROCESSING NEURAL EVIDENCE...</p>
                   </div>
                 )}
                 {mmResult?.type === 'image' && (
@@ -883,10 +1028,10 @@ export default function App() {
                 )}
                 {mmResult?.type === 'analysis' && (
                   <div className="w-full h-full p-6 overflow-y-auto custom-scrollbar">
-                    <h3 className="text-xs font-bold text-[#ff4444] uppercase mb-4 flex items-center gap-2">
-                      <Eye size={14} /> Forensic Analysis Report
+                    <h3 className="text-xs font-bold text-[#00ff00] uppercase mb-4 flex items-center gap-2">
+                      <Eye size={14} /> FORENSIC ANALYSIS REPORT
                     </h3>
-                    <div className="prose prose-invert prose-sm max-w-none">
+                    <div className="prose prose-invert prose-sm max-w-none prose-headings:text-[#00ff00] prose-a:text-[#00ff00]">
                       <Markdown>{mmResult.text || ''}</Markdown>
                     </div>
                   </div>
@@ -898,20 +1043,24 @@ export default function App() {
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             <div className="lg:col-span-12">
               <form onSubmit={handleMapsSearch} className="relative group">
-                <input
-                  type="text"
-                  value={mapsQuery}
-                  onChange={(e) => setMapsQuery(e.target.value)}
-                  placeholder="ENTER LOCATION OR GEOSPATIAL TARGET..."
-                  className="w-full bg-[#0a0a0a] border border-[#333] p-6 pl-14 rounded-lg focus:outline-none focus:border-[#ff4444] transition-all text-lg tracking-tight placeholder:text-[#333]"
-                />
-                <MapIcon className="absolute left-6 top-1/2 -translate-y-1/2 text-[#333] group-focus-within:text-[#ff4444] transition-colors" />
-                <button
-                  disabled={mapsLoading}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 bg-[#ff4444] text-black px-6 py-2 rounded font-bold hover:bg-white transition-colors disabled:opacity-50"
-                >
-                  {mapsLoading ? <Loader2 className="animate-spin" /> : 'LOCATE'}
-                </button>
+                <Tooltip text="ENTER TARGET LOCATION">
+                  <input
+                    type="text"
+                    value={mapsQuery}
+                    onChange={(e) => setMapsQuery(e.target.value)}
+                    placeholder="ENTER LOCATION OR GEOSPATIAL TARGET..."
+                    className="w-full bg-[#0a0a0a] border border-[#333] p-6 pl-14 rounded-lg focus:outline-none focus:border-[#00ff00] transition-all text-lg tracking-tight placeholder:text-[#333]"
+                  />
+                </Tooltip>
+                <MapIcon className="absolute left-6 top-1/2 -translate-y-1/2 text-[#333] group-focus-within:text-[#00ff00] transition-colors" />
+                <Tooltip text="EXECUTE GEOSPATIAL SEARCH">
+                  <button
+                    disabled={mapsLoading}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 bg-[#00ff00] text-black px-6 py-2 rounded font-bold hover:bg-[#00ff00]/80 transition-colors disabled:opacity-50"
+                  >
+                    {mapsLoading ? <Loader2 className="animate-spin" /> : 'LOCATE'}
+                  </button>
+                </Tooltip>
               </form>
             </div>
             {mapsData ? (
@@ -920,7 +1069,7 @@ export default function App() {
                   <h2 className="text-xs font-bold text-[#666] uppercase mb-6 flex items-center gap-2">
                     <Globe size={14} /> Geospatial Intelligence Report
                   </h2>
-                  <div className="prose prose-invert prose-sm max-w-none prose-headings:text-[#ff4444]">
+                  <div className="prose prose-invert prose-sm max-w-none prose-headings:text-[#00ff00] prose-a:text-[#00ff00]">
                     <Markdown>{mapsData.report}</Markdown>
                   </div>
                 </div>
@@ -930,16 +1079,17 @@ export default function App() {
                   </h2>
                   <div className="space-y-3">
                     {mapsData.sources.map((source, i) => (
-                      <a
-                        key={i}
-                        href={source.uri}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="block p-3 bg-[#111] border border-[#222] hover:border-[#ff4444] transition-colors rounded text-[11px]"
-                      >
-                        <div className="text-[#eee] font-bold truncate">{source.title}</div>
-                        <div className="text-[#444] truncate">{source.uri}</div>
-                      </a>
+                      <Tooltip key={i} text={`OPEN MAP: ${source.title.toUpperCase()}`}>
+                        <a
+                          href={source.uri}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="block p-3 bg-[#111] border border-[#222] hover:border-[#00ff00] transition-colors rounded text-[11px]"
+                        >
+                          <div className="text-[#eee] font-bold truncate">{source.title}</div>
+                          <div className="text-[#444] truncate">{source.uri}</div>
+                        </a>
+                      </Tooltip>
                     ))}
                   </div>
                 </div>
@@ -969,21 +1119,25 @@ export default function App() {
                 ) : (
                   <div className="space-y-4">
                     {history.map(item => (
-                      <div key={item.id} className="p-4 bg-[#111] border border-[#222] rounded group hover:border-[#ff4444] transition-all cursor-pointer" onClick={() => loadHistoryItem(item)}>
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-[11px] font-bold text-[#eee] truncate">{item.query}</span>
-                          <span className="text-[8px] text-[#444] uppercase">{item.timestamp?.toDate().toLocaleString()}</span>
+                      <Tooltip key={item.id} text={`LOAD BREACH: ${item.query.toUpperCase()}`}>
+                        <div className="p-4 bg-[#111] border border-[#222] rounded group hover:border-[#00ff00] transition-all cursor-pointer" onClick={() => loadHistoryItem(item)}>
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-[11px] font-bold text-[#eee] truncate">{item.query}</span>
+                            <span className="text-[8px] text-[#444] uppercase">{item.timestamp?.toDate().toLocaleString()}</span>
+                          </div>
+                          <div className="flex items-center justify-between text-[9px] text-[#444] uppercase">
+                            <span>{(item.data?.nodes?.length || 0)} Nodes // {(item.data?.links?.length || 0)} Links</span>
+                            <Tooltip text="PURGE FROM ARCHIVE">
+                              <button 
+                                onClick={(e) => { e.stopPropagation(); deleteHistoryItem(item.id); }} 
+                                className="opacity-0 group-hover:opacity-100 transition-opacity hover:text-[#00ff00]"
+                              >
+                                <Trash2 size={12} />
+                              </button>
+                            </Tooltip>
+                          </div>
                         </div>
-                        <div className="flex items-center justify-between text-[9px] text-[#444] uppercase">
-                          <span>{(item.data?.nodes?.length || 0)} Nodes // {(item.data?.links?.length || 0)} Links</span>
-                          <button 
-                            onClick={(e) => { e.stopPropagation(); deleteHistoryItem(item.id); }} 
-                            className="opacity-0 group-hover:opacity-100 transition-opacity hover:text-[#ff4444]"
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        </div>
-                      </div>
+                      </Tooltip>
                     ))}
                   </div>
                 )}
@@ -1008,19 +1162,19 @@ export default function App() {
                     <div className="grid grid-cols-3 gap-4">
                       <div className="bg-[#111] p-4 border border-[#222] rounded">
                         <div className="text-[9px] text-[#444] uppercase mb-1">Total Entities</div>
-                        <div className="text-2xl font-bold text-[#ff4444]">
+                        <div className="text-2xl font-bold text-[#00ff00]">
                           {Array.from(new Set(history.flatMap(h => h.data?.nodes?.map((n: any) => n.label) || []))).length}
                         </div>
                       </div>
                       <div className="bg-[#111] p-4 border border-[#222] rounded">
                         <div className="text-[9px] text-[#444] uppercase mb-1">Total Relations</div>
-                        <div className="text-2xl font-bold text-[#4444ff]">
+                        <div className="text-2xl font-bold text-[#00ff00]">
                           {history.reduce((acc, h) => acc + (h.data?.links?.length || 0), 0)}
                         </div>
                       </div>
                       <div className="bg-[#111] p-4 border border-[#222] rounded">
                         <div className="text-[9px] text-[#444] uppercase mb-1">Data Sources</div>
-                        <div className="text-2xl font-bold text-[#44ff44]">
+                        <div className="text-2xl font-bold text-[#00ff00]">
                           {Array.from(new Set(history.flatMap(h => h.data?.sources?.map((s: any) => s.uri) || []))).length}
                         </div>
                       </div>
@@ -1046,12 +1200,7 @@ export default function App() {
                             <tr key={label} className="hover:bg-[#111] transition-colors">
                               <td className="p-3 font-bold text-[#eee]">{label}</td>
                               <td className="p-3">
-                                <span className={`px-2 py-0.5 rounded text-[8px] font-bold uppercase ${
-                                  info.type === 'target' ? 'bg-[#ff4444]/20 text-[#ff4444]' :
-                                  info.type === 'person' ? 'bg-[#ffaa00]/20 text-[#ffaa00]' :
-                                  info.type === 'company' ? 'bg-[#00ffff]/20 text-[#00ffff]' :
-                                  'bg-[#333] text-[#666]'
-                                }`}>
+                                <span className="px-2 py-0.5 rounded text-[8px] font-bold uppercase bg-[#00ff00]/20 text-[#00ff00]">
                                   {info.type}
                                 </span>
                               </td>
@@ -1078,33 +1227,38 @@ export default function App() {
                     <label className="text-[10px] text-[#444] uppercase mb-2 block">Select Module</label>
                     <div className="grid grid-cols-2 gap-2">
                       {(['username', 'email', 'domain', 'ip'] as const).map(tool => (
-                        <button
-                          key={tool}
-                          onClick={() => setForensicTool(tool)}
-                          className={`p-3 rounded border text-[10px] font-bold uppercase transition-all ${forensicTool === tool ? 'bg-[#ff4444] text-black border-[#ff4444]' : 'bg-[#111] text-[#666] border-[#222] hover:border-[#ff4444]'}`}
-                        >
-                          {tool}
-                        </button>
+                        <Tooltip key={tool} text={`SELECT ${tool.toUpperCase()} MODULE`}>
+                          <button
+                            onClick={() => setForensicTool(tool)}
+                            className={`p-3 rounded border text-[10px] font-bold uppercase transition-all ${forensicTool === tool ? 'bg-[#00ff00] text-black border-[#00ff00]' : 'bg-[#111] text-[#666] border-[#222] hover:border-[#00ff00]'}`}
+                          >
+                            {tool}
+                          </button>
+                        </Tooltip>
                       ))}
                     </div>
                   </div>
                   <div>
                     <label className="text-[10px] text-[#444] uppercase mb-2 block">Target Input</label>
                     <form onSubmit={handleForensicSearch} className="flex gap-2">
-                      <input 
-                        type="text" 
-                        value={forensicQuery}
-                        onChange={(e) => setForensicQuery(e.target.value)}
-                        placeholder={`Enter ${forensicTool}...`}
-                        className="flex-1 bg-black border border-[#222] p-3 text-xs focus:border-[#ff4444] outline-none"
-                      />
-                      <button 
-                        type="submit"
-                        disabled={forensicLoading || !forensicQuery.trim()}
-                        className="bg-[#ff4444] text-black px-4 rounded font-bold uppercase text-[10px] disabled:opacity-50"
-                      >
-                        {forensicLoading ? <Loader2 size={14} className="animate-spin" /> : 'Run'}
-                      </button>
+                      <Tooltip text="ENTER TARGET DATA">
+                        <input 
+                          type="text" 
+                          value={forensicQuery}
+                          onChange={(e) => setForensicQuery(e.target.value)}
+                          placeholder={`Enter ${forensicTool}...`}
+                          className="flex-1 bg-black border border-[#222] p-3 text-xs focus:border-[#00ff00] outline-none"
+                        />
+                      </Tooltip>
+                      <Tooltip text="EXECUTE FORENSIC MODULE">
+                        <button 
+                          type="submit"
+                          disabled={forensicLoading || !forensicQuery.trim()}
+                          className="bg-[#00ff00] text-black px-4 rounded font-bold uppercase text-[10px] disabled:opacity-50"
+                        >
+                          {forensicLoading ? <Loader2 size={14} className="animate-spin" /> : 'RUN'}
+                        </button>
+                      </Tooltip>
                     </form>
                   </div>
                 </div>
@@ -1123,12 +1277,12 @@ export default function App() {
                 )}
                 {forensicLoading && (
                   <div className="flex-1 flex flex-col items-center justify-center gap-4">
-                    <Loader2 size={48} className="animate-spin text-[#ff4444]" />
-                    <p className="text-[10px] text-[#666] uppercase animate-pulse">Mining Unstructured Data...</p>
+                    <Loader2 size={48} className="animate-spin text-[#00ff00]" />
+                    <p className="text-[10px] text-[#666] uppercase animate-pulse">MINING UNSTRUCTURED DATA...</p>
                   </div>
                 )}
                 {forensicResult && (
-                  <div className="prose prose-invert prose-sm max-w-none prose-headings:text-[#ff4444]">
+                  <div className="prose prose-invert prose-sm max-w-none prose-headings:text-[#00ff00] prose-a:text-[#00ff00]">
                     <Markdown>{forensicResult}</Markdown>
                   </div>
                 )}
@@ -1157,19 +1311,23 @@ export default function App() {
                       <div key={target.id} className="p-4 bg-[#111] border border-[#222] rounded group">
                         <div className="flex items-center justify-between mb-2">
                           <span className="text-[11px] font-bold text-[#eee] truncate">{target.query}</span>
-                          <div className={`text-[8px] px-2 py-0.5 rounded uppercase font-bold ${target.status === 'active' ? 'bg-[#44ff44]/10 text-[#44ff44]' : 'bg-[#ff4444]/10 text-[#ff4444]'}`}>
+                          <div className={`text-[8px] px-2 py-0.5 rounded uppercase font-bold ${target.status === 'active' ? 'bg-[#00ff00]/10 text-[#00ff00]' : 'bg-[#00ff00]/10 text-[#00ff00]'}`}>
                             {target.status}
                           </div>
                         </div>
                         <div className="flex items-center justify-between text-[9px] text-[#444] uppercase">
                           <span>Added: {target.createdAt?.toDate().toLocaleDateString()}</span>
                           <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button onClick={() => toggleTargetStatus(target)} className="hover:text-[#eee]">
-                              {target.status === 'active' ? 'Pause' : 'Resume'}
-                            </button>
-                            <button onClick={() => deleteTarget(target.id)} className="hover:text-[#ff4444]">
-                              <Trash2 size={12} />
-                            </button>
+                            <Tooltip text={target.status === 'active' ? 'PAUSE MONITORING' : 'RESUME MONITORING'}>
+                              <button onClick={() => toggleTargetStatus(target)} className="hover:text-[#eee]">
+                                {target.status === 'active' ? 'PAUSE' : 'RESUME'}
+                              </button>
+                            </Tooltip>
+                            <Tooltip text="REMOVE FROM WATCHLIST">
+                              <button onClick={() => deleteTarget(target.id)} className="hover:text-[#00ff00]">
+                                <Trash2 size={12} />
+                              </button>
+                            </Tooltip>
                           </div>
                         </div>
                       </div>
@@ -1197,7 +1355,7 @@ export default function App() {
                 ) : (
                   <div className="space-y-4">
                     {alerts.map(alert => (
-                      <div key={alert.id} className="p-4 bg-[#111] border-l-2 border-[#ff4444] rounded-r">
+                      <div key={alert.id} className="p-4 bg-[#111] border-l-2 border-[#00ff00] rounded-r">
                         <div className="flex items-center justify-between mb-2">
                           <h3 className="text-xs font-bold text-[#eee]">{alert.title}</h3>
                           <span className="text-[9px] text-[#666] uppercase">{alert.timestamp?.toDate().toLocaleString()}</span>
@@ -1206,10 +1364,8 @@ export default function App() {
                         <div className="flex items-center justify-between">
                           <span className="text-[9px] text-[#444] uppercase">Target: {monitoredTargets.find(t => t.id === alert.targetId)?.query || 'Unknown'}</span>
                           <div className={`text-[8px] px-2 py-0.5 rounded uppercase font-bold ${
-                            alert.severity === 'critical' ? 'bg-[#ff4444] text-black' :
-                            alert.severity === 'high' ? 'bg-[#ff4444]/20 text-[#ff4444]' :
-                            alert.severity === 'medium' ? 'bg-[#ffff44]/20 text-[#ffff44]' :
-                            'bg-[#44ff44]/20 text-[#44ff44]'
+                            alert.severity === 'critical' ? 'bg-[#00ff00] text-black' :
+                            'bg-[#00ff00]/20 text-[#00ff00]'
                           }`}>
                             {alert.severity}
                           </div>
@@ -1225,7 +1381,7 @@ export default function App() {
       </main>
 
       <footer className="border-t border-[#1a1a1a] p-4 text-center text-[10px] text-[#333] uppercase tracking-widest">
-        Nexus Intelligence System v1.0.4 // Authorized Access Only
+        VOID OSINT // ANONYMOUS v1.0.4 // AUTHORIZED ACCESS ONLY
       </footer>
 
       <style>{`

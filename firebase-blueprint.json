@@ -27,6 +27,30 @@
         "uid": { "type": "string", "description": "Owner's user ID." }
       },
       "required": ["targetId", "title", "content", "severity", "timestamp", "uid"]
+    },
+    "HistoryItem": {
+      "title": "HistoryItem",
+      "description": "A record of an intelligence search and its results.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "query": { "type": "string", "description": "The search query." },
+        "data": { "type": "object", "description": "The intelligence data (nodes, links, report, sources)." },
+        "chatMessages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "role": { "type": "string", "enum": ["user", "model"] },
+              "text": { "type": "string" }
+            },
+            "required": ["role", "text"]
+          }
+        },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "uid": { "type": "string", "description": "Owner's user ID." }
+      },
+      "required": ["query", "data", "timestamp", "uid"]
     }
   },
   "firestore": {
@@ -37,6 +61,10 @@
     "/alerts/{alertId}": {
       "schema": "Alert",
       "description": "Real-time alerts for monitored entities."
+    },
+    "/history/{historyId}": {
+      "schema": "HistoryItem",
+      "description": "Historical intelligence search records."
     }
   }
 }

@@ -205,7 +205,7 @@ export async function chatIntelligence(
   context: string, 
   history: ChatMessage[],
   highThinking: boolean = false
-): Promise<string> {
+): Promise<{ text: string; nodes?: any[]; links?: any[] }> {
   const model = highThinking ? "gemini-3.1-pro-preview" : "gemini-3.1-flash-lite-preview";
   
   const contents = [
@@ -228,12 +228,58 @@ export async function chatIntelligence(
     contents,
     config: {
       tools: [{ googleSearch: {} }],
+      responseMimeType: "application/json",
       thinkingConfig: highThinking ? { thinkingLevel: ThinkingLevel.HIGH } : undefined,
-      systemInstruction: "You are an OSINT analyst. Answer questions based on the provided intelligence context and perform additional searches if necessary."
+      systemInstruction: `You are an OSINT analyst. Answer questions based on the provided intelligence context and perform additional searches if necessary.
+      If the conversation reveals NEW entities or relationships, provide them in the 'nodes' and 'links' arrays so the intelligence graph can be updated.
+      Return a JSON object with:
+      - text: Your conversational response (Markdown).
+      - nodes: (Optional) Array of new { id, label, type } to add to the graph.
+      - links: (Optional) Array of new { source, target, label } to add to the graph.`,
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          text: { type: Type.STRING },
+          nodes: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                id: { type: Type.STRING },
+                label: { type: Type.STRING },
+                type: { type: Type.STRING, enum: ['target', 'email', 'domain', 'social', 'leak', 'public_data', 'person', 'company', 'political', 'financial'] }
+              },
+              required: ['id', 'label', 'type']
+            }
+          },
+          links: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                source: { type: Type.STRING },
+                target: { type: Type.STRING },
+                label: { type: Type.STRING }
+              },
+              required: ['source', 'target']
+            }
+          }
+        },
+        required: ['text']
+      }
     }
   });
 
-  return response.text || "No response from intelligence engine.";
+  try {
+    const data = JSON.parse(response.text || "{}");
+    return {
+      text: data.text || "No response from intelligence engine.",
+      nodes: data.nodes,
+      links: data.links
+    };
+  } catch (e) {
+    return { text: response.text || "No response from intelligence engine." };
+  }
 }
 
 export async function expandIntelligenceNode(

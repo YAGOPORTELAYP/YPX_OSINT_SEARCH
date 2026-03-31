@@ -46,6 +46,7 @@ export interface HistoryItem {
   id: string;
   query: string;
   data: IntelligenceData;
+  chatMessages?: ChatMessage[];
   timestamp: any;
   uid: string;
 }

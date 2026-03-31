@@ -1,1 +1,39 @@
 @import "tailwindcss";
+
+@theme {
+  --color-primary: #00ff00;
+  --color-primary-hover: #00cc00;
+  --color-bg-dark: #050505;
+  --color-border: #111;
+  --color-border-active: #00ff00;
+}
+
+@keyframes glitch {
+  0% { transform: translate(0); }
+  20% { transform: translate(-2px, 2px); }
+  40% { transform: translate(-2px, -2px); }
+  60% { transform: translate(2px, 2px); }
+  80% { transform: translate(2px, -2px); }
+  100% { transform: translate(0); }
+}
+
+.glitch-hover:hover {
+  animation: glitch 0.3s infinite;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: #050505;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #111;
+  border-radius: 10px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #00ff00;
+}

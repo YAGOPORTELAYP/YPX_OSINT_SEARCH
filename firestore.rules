@@ -23,6 +23,13 @@ service cloud.firestore {
     //   - timestamp: timestamp (required)
     //   - uid: string (required, immutable)
     //
+    // Collection: history
+    // Fields:
+    //   - query: string (required)
+    //   - data: map (required)
+    //   - timestamp: timestamp (required)
+    //   - uid: string (required, immutable)
+    //
     // ===============================================================
 
     // Helper Functions
@@ -75,6 +82,14 @@ service cloud.firestore {
              data.uid == request.auth.uid;
     }
 
+    function isValidHistory(data) {
+      return data.query is string && data.query.size() > 0 && data.query.size() < 512 &&
+             data.data is map &&
+             (!('chatMessages' in data) || data.chatMessages is list) &&
+             data.timestamp is timestamp &&
+             data.uid == request.auth.uid;
+    }
+
     // Rules
     match /targets/{targetId} {
       allow read: if isDocOwner();
@@ -87,6 +102,13 @@ service cloud.firestore {
       allow read: if isDocOwner();
       allow create: if isAuthenticated() && isValidAlert(request.resource.data) && uidUnchanged();
       allow update: if isDocOwner() && isValidAlert(request.resource.data) && uidNotModified();
+      allow delete: if isDocOwner();
+    }
+
+    match /history/{historyId} {
+      allow read: if isDocOwner();
+      allow create: if isAuthenticated() && isValidHistory(request.resource.data) && uidUnchanged();
+      allow update: if isDocOwner() && isValidHistory(request.resource.data) && uidNotModified();
       allow delete: if isDocOwner();
     }
   }
