@@ -17,6 +17,7 @@ export default function App() {
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [highThinking, setHighThinking] = useState(false);
+  const [brazilLayer, setBrazilLayer] = useState(false);
   const [data, setData] = useState<IntelligenceData | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -60,12 +61,41 @@ export default function App() {
   const [forensicQuery, setForensicQuery] = useState('');
   const [forensicTool, setForensicTool] = useState<'username' | 'email' | 'domain' | 'ip'>('username');
   const [forensicResult, setForensicResult] = useState<string | null>(null);
+  const [usernameQuery, setUsernameQuery] = useState('');
   const [forensicLoading, setForensicLoading] = useState(false);
   const [expandingNodeId, setExpandingNodeId] = useState<string | null>(null);
   const [showHistorySidebar, setShowHistorySidebar] = useState(false);
 
   const [currentHistoryId, setCurrentHistoryId] = useState<string | null>(null);
   const [isGraphFullscreen, setIsGraphFullscreen] = useState(false);
+  const [hasApiKey, setHasApiKey] = useState<boolean>(true); // Default to true to be "practical"
+
+  useEffect(() => {
+    // We default to true to allow immediate access. 
+    // If a key is truly missing, the first API call will trigger handleApiError.
+    const checkApiKey = async () => {
+      try {
+        if (window.aistudio?.hasSelectedApiKey) {
+          const has = await window.aistudio.hasSelectedApiKey();
+          // We only set to false if we are absolutely sure there's no key at all
+          if (!has && !process.env.GEMINI_API_KEY) {
+            // Even then, we might want to wait for the first failure to be "practical"
+            // But let's at least check once quietly.
+          }
+        }
+      } catch (err) {
+        console.error("API key check failed:", err);
+      }
+    };
+    checkApiKey();
+  }, []);
+
+  const handleOpenKeySelection = async () => {
+    if (window.aistudio?.openSelectKey) {
+      await window.aistudio.openSelectKey();
+      setHasApiKey(true); // Assume success per guidelines
+    }
+  };
 
   const updateHistory = async (newData?: IntelligenceData, newChatMessages?: ChatMessage[]) => {
     if (newData) setData(newData);
@@ -113,9 +143,14 @@ export default function App() {
       setAlerts(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Alert)));
     });
 
+    setHistoryLoading(true);
     const historyQuery = fsQuery(collection(db, 'history'), where('uid', '==', user.uid), orderBy('timestamp', 'desc'));
     const unsubscribeHistory = onSnapshot(historyQuery, (snapshot) => {
       setHistory(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+      setHistoryLoading(false);
+    }, (err) => {
+      console.error(err);
+      setHistoryLoading(false);
     });
 
     return () => {
@@ -136,6 +171,17 @@ export default function App() {
 
   const handleLogout = () => auth.signOut();
 
+  const handleApiError = (err: any) => {
+    console.error(err);
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes("API key not valid") || message.includes("invalid API key") || message.includes("403")) {
+      setHasApiKey(false);
+      setError("INTELLIGENCE GRID ACCESS DENIED: API key invalid or unauthorized. Please select a valid Gemini key from a paid project or ensure your free tier quota is not exceeded.");
+    } else {
+      setError(message || "An unexpected error occurred in the intelligence engine.");
+    }
+  };
+
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!query.trim()) return;
@@ -144,7 +190,7 @@ export default function App() {
     setError(null);
     setChatMessages([]); 
     try {
-      const result = await performIntelligenceSearch(query, highThinking);
+      const result = await performIntelligenceSearch(query, highThinking, brazilLayer);
       setData(result);
       
       // Save to history if user is logged in
@@ -154,13 +200,13 @@ export default function App() {
           data: result,
           chatMessages: [],
           uid: user.uid,
-          timestamp: serverTimestamp()
+          timestamp: serverTimestamp(),
+          brazilLayer
         });
         setCurrentHistoryId(docRef.id);
       }
     } catch (err) {
-      console.error(err);
-      setError('BREACH FAILED. CONNECTION LOST.');
+      handleApiError(err);
     } finally {
       setLoading(false);
     }
@@ -272,7 +318,7 @@ export default function App() {
       if (!data) {
         // Initial search via chat
         setQuery(currentInput);
-        const result = await performIntelligenceSearch(currentInput, highThinking);
+        const result = await performIntelligenceSearch(currentInput, highThinking, brazilLayer);
         setData(result);
         
         const finalMessages: ChatMessage[] = [...updatedMessages, { role: 'model', text: "Intelligence gathered. Analysis complete. I've generated the graph and report based on your query. How can I assist further?" }];
@@ -284,12 +330,13 @@ export default function App() {
             data: result,
             chatMessages: finalMessages,
             uid: user.uid,
-            timestamp: serverTimestamp()
+            timestamp: serverTimestamp(),
+            brazilLayer
           });
           setCurrentHistoryId(docRef.id);
         }
       } else {
-        const response = await chatIntelligence(currentInput, data.context || '', chatMessages, highThinking);
+        const response = await chatIntelligence(currentInput, data.context || '', chatMessages, highThinking, brazilLayer);
         
         let updatedData = data;
         if (response.nodes || response.links) {
@@ -307,7 +354,7 @@ export default function App() {
         updateHistory(updatedData, finalMessages);
       }
     } catch (err) {
-      console.error(err);
+      handleApiError(err);
       setChatMessages(prev => [...prev, { role: 'model', text: 'ERROR: Intelligence engine offline.' }]);
     } finally {
       setChatLoading(false);
@@ -322,8 +369,7 @@ export default function App() {
       const result = await performMapsSearch(mapsQuery);
       setMapsData(result);
     } catch (err) {
-      console.error(err);
-      setError('Maps intelligence engine failure.');
+      handleApiError(err);
     } finally {
       setMapsLoading(false);
     }
@@ -336,8 +382,7 @@ export default function App() {
       const url = await generateIntelligenceImage(mmPrompt, mmSize);
       setMmResult({ type: 'image', url });
     } catch (err) {
-      console.error(err);
-      setError('Image generation failed.');
+      handleApiError(err);
     } finally {
       setMmLoading(false);
     }
@@ -350,8 +395,7 @@ export default function App() {
       const url = await generateIntelligenceVideo(mmPrompt, mmResult?.type === 'image' ? mmResult.url : undefined);
       setMmResult({ type: 'video', url });
     } catch (err) {
-      console.error(err);
-      setError('Video generation failed.');
+      handleApiError(err);
     } finally {
       setMmLoading(false);
     }
@@ -364,14 +408,18 @@ export default function App() {
       const reader = new FileReader();
       reader.readAsDataURL(selectedFile);
       reader.onload = async () => {
-        const base64 = reader.result as string;
-        const text = await analyzeMedia(mmPrompt, base64, selectedFile.type);
-        setMmResult({ type: 'analysis', text });
-        setMmLoading(false);
+        try {
+          const base64 = reader.result as string;
+          const text = await analyzeMedia(mmPrompt, base64, selectedFile.type);
+          setMmResult({ type: 'analysis', text });
+        } catch (err) {
+          handleApiError(err);
+        } finally {
+          setMmLoading(false);
+        }
       };
     } catch (err) {
-      console.error(err);
-      setError('Media analysis failed.');
+      handleApiError(err);
       setMmLoading(false);
     }
   };
@@ -382,7 +430,7 @@ export default function App() {
       const url = await textToSpeech(text);
       setAudioUrl(url);
     } catch (err) {
-      console.error(err);
+      handleApiError(err);
     } finally {
       setTtsLoading(false);
     }
@@ -392,7 +440,7 @@ export default function App() {
     if (!data) return;
     setExpandingNodeId(nodeId);
     try {
-      const result = await expandIntelligenceNode(nodeId, nodeLabel, data, highThinking);
+      const result = await expandIntelligenceNode(nodeId, nodeLabel, data, highThinking, brazilLayer);
       
       // Merge new nodes and links
       const newNodes = [...data.nodes];
@@ -415,8 +463,7 @@ export default function App() {
         report: data.report + "\n\n### Node Expansion Update: " + nodeLabel + "\n" + result.report
       });
     } catch (err) {
-      console.error(err);
-      setError('Node expansion failed.');
+      handleApiError(err);
     } finally {
       setExpandingNodeId(null);
     }
@@ -430,8 +477,21 @@ export default function App() {
       const result = await performForensicTool(forensicTool, forensicQuery);
       setForensicResult(result);
     } catch (err) {
-      console.error(err);
-      setError('Forensic tool execution failed.');
+      handleApiError(err);
+    } finally {
+      setForensicLoading(false);
+    }
+  };
+
+  const handleUsernameSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!usernameQuery.trim()) return;
+    setForensicLoading(true);
+    try {
+      const result = await performForensicTool('username', usernameQuery);
+      setForensicResult(result);
+    } catch (err) {
+      handleApiError(err);
     } finally {
       setForensicLoading(false);
     }
@@ -439,6 +499,34 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#050505] text-[#e0e0e0] font-mono selection:bg-[#00ff00] selection:text-black">
+      {/* API Key Selection Overlay - Only shown if explicitly failed */}
+      {hasApiKey === false && (
+        <div className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="max-w-md w-full bg-[#0a0a0a] border border-[#00ff00]/30 p-8 rounded-lg text-center shadow-[0_0_50px_rgba(0,255,0,0.1)]">
+            <Shield className="mx-auto mb-6 text-[#00ff00]" size={48} />
+            <h2 className="text-xl font-bold text-[#eee] mb-4 uppercase tracking-widest">Intelligence Key Required</h2>
+            <p className="text-[#666] text-sm mb-8 leading-relaxed">
+              To access advanced intelligence models (Gemini 3.1 Pro & Veo), you must connect your Google AI Studio API key. 
+              <br /><br />
+              <a 
+                href="https://ai.google.dev/gemini-api/docs/billing" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="text-[#00ff00] hover:underline"
+              >
+                Learn about billing and API keys
+              </a>
+            </p>
+            <button
+              onClick={handleOpenKeySelection}
+              className="w-full py-4 bg-[#00ff00] text-black font-bold uppercase tracking-widest rounded hover:bg-[#00cc00] transition-all shadow-[0_0_20px_rgba(0,255,0,0.2)]"
+            >
+              Connect Intelligence Key
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header className="border-b border-[#1a1a1a] p-4 flex items-center justify-between bg-[#0a0a0a]">
         <div className="flex items-center gap-3">
@@ -537,24 +625,34 @@ export default function App() {
                 </div>
 
                 <div className="w-full max-w-2xl space-y-6">
-                  <form onSubmit={handleChat} className="relative group">
-                    <input
-                      type="text"
-                      value={chatInput}
-                      onChange={(e) => setChatInput(e.target.value)}
-                      placeholder="DESCRIBE YOUR TARGET OR DATA BREACH GOAL..."
-                      className="w-full bg-[#0a0a0a] border border-[#333] p-6 pl-14 pr-36 rounded-lg focus:outline-none focus:border-[#00ff00] transition-all text-lg tracking-tight placeholder:text-[#111]"
-                    />
-                    <MessageSquare className="absolute left-6 top-1/2 -translate-y-1/2 text-[#333] group-focus-within:text-[#00ff00] transition-colors" />
-                    <Tooltip text="START DATA BREACH">
-                      <button
-                        disabled={chatLoading || !chatInput.trim()}
-                        className="absolute right-4 top-1/2 -translate-y-1/2 bg-[#00ff00] text-black px-6 py-2 rounded font-bold hover:bg-[#00ff00]/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        {chatLoading ? <Loader2 className="animate-spin" /> : 'INITIATE'}
-                      </button>
-                    </Tooltip>
-                  </form>
+                  {chatLoading && !data ? (
+                    <div className="flex flex-col items-center justify-center space-y-4 p-12 bg-[#0a0a0a] border border-[#00ff00]/20 rounded-lg animate-pulse">
+                      <Loader2 className="w-12 h-12 text-[#00ff00] animate-spin" strokeWidth={1} />
+                      <div className="text-center">
+                        <p className="text-[10px] text-[#00ff00] uppercase tracking-[0.4em] font-bold">BREACHING GRID // EXTRACTING DATA</p>
+                        <p className="text-[8px] text-[#333] uppercase tracking-[0.2em] mt-1">Awaiting Intelligence Response...</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <form onSubmit={handleChat} className="relative group">
+                      <input
+                        type="text"
+                        value={chatInput}
+                        onChange={(e) => setChatInput(e.target.value)}
+                        placeholder="DESCRIBE YOUR TARGET OR DATA BREACH GOAL..."
+                        className="w-full bg-[#0a0a0a] border border-[#333] p-6 pl-14 pr-36 rounded-lg focus:outline-none focus:border-[#00ff00] transition-all text-lg tracking-tight placeholder:text-[#111]"
+                      />
+                      <MessageSquare className="absolute left-6 top-1/2 -translate-y-1/2 text-[#333] group-focus-within:text-[#00ff00] transition-colors" />
+                      <Tooltip text="START DATA BREACH">
+                        <button
+                          disabled={chatLoading || !chatInput.trim()}
+                          className="absolute right-4 top-1/2 -translate-y-1/2 bg-[#00ff00] text-black px-6 py-2 rounded font-bold hover:bg-[#00ff00]/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {chatLoading ? <Loader2 className="animate-spin" /> : 'INITIATE'}
+                        </button>
+                      </Tooltip>
+                    </form>
+                  )}
 
                   <div className="flex items-center justify-center gap-8">
                     <Tooltip text="ENABLE ADVANCED REASONING">
@@ -571,6 +669,24 @@ export default function App() {
                         </div>
                         <span className={`text-[10px] font-bold uppercase tracking-widest transition-colors ${highThinking ? 'text-[#00ff00]' : 'text-[#666]'}`}>
                           DEEP EXPLOITATION MODE
+                        </span>
+                      </label>
+                    </Tooltip>
+
+                    <Tooltip text="ACTIVATE BRAZILIAN OSINT SOURCES">
+                      <label className="flex items-center gap-3 cursor-pointer group">
+                        <div className="relative">
+                          <input
+                            type="checkbox"
+                            className="sr-only"
+                            checked={brazilLayer}
+                            onChange={(e) => setBrazilLayer(e.target.checked)}
+                          />
+                          <div className={`w-10 h-5 rounded-full border border-[#333] transition-colors ${brazilLayer ? 'bg-[#00ff00]/20 border-[#00ff00]' : 'bg-[#0a0a0a]'}`} />
+                          <div className={`absolute top-1 left-1 w-3 h-3 rounded-full transition-all ${brazilLayer ? 'translate-x-5 bg-[#00ff00]' : 'bg-[#333]'}`} />
+                        </div>
+                        <span className={`text-[10px] font-bold uppercase tracking-widest transition-colors ${brazilLayer ? 'text-[#00ff00]' : 'text-[#666]'}`}>
+                          BRAZIL LAYER
                         </span>
                       </label>
                     </Tooltip>
@@ -622,6 +738,23 @@ export default function App() {
                         </span>
                       </label>
                     </Tooltip>
+                    <Tooltip text="ACTIVATE BRAZILIAN OSINT SOURCES">
+                      <label className="flex items-center gap-3 cursor-pointer group">
+                        <div className="relative">
+                          <input
+                            type="checkbox"
+                            className="sr-only"
+                            checked={brazilLayer}
+                            onChange={(e) => setBrazilLayer(e.target.checked)}
+                          />
+                          <div className={`w-8 h-4 rounded-full border border-[#333] transition-colors ${brazilLayer ? 'bg-[#00ff00]/20 border-[#00ff00]' : 'bg-[#0a0a0a]'}`} />
+                          <div className={`absolute top-0.5 left-0.5 w-2.5 h-2.5 rounded-full transition-all ${brazilLayer ? 'translate-x-4 bg-[#00ff00]' : 'bg-[#333]'}`} />
+                        </div>
+                        <span className={`text-[9px] font-bold uppercase tracking-widest transition-colors ${brazilLayer ? 'text-[#00ff00]' : 'text-[#666]'}`}>
+                          BRAZIL LAYER
+                        </span>
+                      </label>
+                    </Tooltip>
                     {user && (
                       <button 
                         onClick={startMonitoring}
@@ -635,11 +768,13 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="lg:col-span-12 bg-[#00ff00]/10 border border-[#00ff00] p-4 rounded flex items-center gap-3 text-[#00ff00]">
-                  <AlertTriangle size={20} />
-                  <span className="text-xs uppercase tracking-widest font-bold">{error}</span>
-                  <div className="w-2 h-2 rounded-full bg-[#00ff00] animate-pulse ml-auto" />
-                </div>
+                {error && (
+                  <div className="lg:col-span-12 bg-[#00ff00]/10 border border-[#00ff00] p-4 rounded flex items-center gap-3 text-[#00ff00] animate-in fade-in slide-in-from-top-2 duration-300">
+                    <AlertTriangle size={20} />
+                    <span className="text-xs uppercase tracking-widest font-bold">{error}</span>
+                    <div className="w-2 h-2 rounded-full bg-[#00ff00] animate-pulse ml-auto" />
+                  </div>
+                )}
 
                 <div className={`lg:col-span-12 grid grid-cols-1 lg:grid-cols-12 gap-6 transition-all duration-300 ${showHistorySidebar ? 'lg:grid-cols-[250px_1fr]' : ''}`}>
                   {showHistorySidebar && (
@@ -648,7 +783,16 @@ export default function App() {
                         <History size={12} /> BREACH ARCHIVE
                       </h3>
                       <div className="space-y-2">
-                        {history.map(item => (
+                        {historyLoading ? (
+                          <div className="flex flex-col items-center justify-center py-10 space-y-2">
+                            <Loader2 className="w-6 h-6 animate-spin text-[#00ff00]/50" />
+                            <span className="text-[8px] text-[#333] uppercase tracking-widest">Accessing Archive...</span>
+                          </div>
+                        ) : history.length === 0 ? (
+                          <div className="text-center py-10 text-[#333] text-[8px] uppercase tracking-widest">
+                            Archive Empty
+                          </div>
+                        ) : history.map(item => (
                           <Tooltip key={item.id} text={`LOAD BREACH: ${item.query.toUpperCase()}`}>
                             <div 
                               onClick={() => loadHistoryItem(item)}
@@ -1210,6 +1354,33 @@ export default function App() {
                         </tbody>
                       </table>
                     </div>
+
+                    <div className="mt-10">
+                      <h2 className="text-xs font-bold text-[#666] uppercase mb-6 flex items-center gap-2">
+                        <Share2 size={14} /> Brazilian OSINT Knowledge Base
+                      </h2>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {[
+                          { name: 'OSINT Brazuca', desc: 'Primary repository for Brazilian public data (CNPJ, TSE, Receita).', url: 'https://github.com/osintbrazuca/osint-brazuca' },
+                          { name: 'OSINTKit-Brasil', desc: '1,600+ Brazilian OSINT links and tools.', url: 'https://github.com/sudo-flgr/OSINTKit-Brasil' },
+                          { name: 'Capivara OSINT', desc: 'Brazilian OSINT Framework fork.', url: 'https://www.capivaraosint.cc/' },
+                          { name: 'br-acc', desc: 'World Transparency Graph (Brazilian Transparency ETL).', url: 'https://github.com/br-acc' },
+                          { name: 'OSINT-Tools-Brazil', desc: 'Curated Brazilian OSINT resources.', url: 'https://github.com/bgmello/OSINT-Tools-Brazil' },
+                          { name: 'Blackbird', desc: 'Social media username lookup tool.', url: 'https://github.com/p1ngul1n0/blackbird' }
+                        ].map((resource, i) => (
+                          <a 
+                            key={i} 
+                            href={resource.url} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="p-4 bg-[#111] border border-[#222] rounded hover:border-[#00ff00] transition-all group"
+                          >
+                            <div className="text-[11px] font-bold text-[#00ff00] mb-1 uppercase tracking-wider">{resource.name}</div>
+                            <div className="text-[10px] text-[#666] leading-relaxed">{resource.desc}</div>
+                          </a>
+                        ))}
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1257,6 +1428,30 @@ export default function App() {
                           className="bg-[#00ff00] text-black px-4 rounded font-bold uppercase text-[10px] disabled:opacity-50"
                         >
                           {forensicLoading ? <Loader2 size={14} className="animate-spin" /> : 'RUN'}
+                        </button>
+                      </Tooltip>
+                    </form>
+                  </div>
+
+                  <div className="pt-4 border-t border-[#222]">
+                    <label className="text-[10px] text-[#444] uppercase mb-2 block">Dedicated Username Search</label>
+                    <form onSubmit={handleUsernameSearch} className="flex gap-2">
+                      <Tooltip text="ENTER USERNAME TO SEARCH">
+                        <input 
+                          type="text" 
+                          value={usernameQuery}
+                          onChange={(e) => setUsernameQuery(e.target.value)}
+                          placeholder="Enter username..."
+                          className="flex-1 bg-black border border-[#222] p-3 text-xs focus:border-[#00ff00] outline-none"
+                        />
+                      </Tooltip>
+                      <Tooltip text="SEARCH USERNAME">
+                        <button 
+                          type="submit"
+                          disabled={forensicLoading || !usernameQuery.trim()}
+                          className="bg-[#00ff00] text-black px-4 rounded font-bold uppercase text-[10px] disabled:opacity-50"
+                        >
+                          {forensicLoading ? <Loader2 size={14} className="animate-spin" /> : 'SEARCH'}
                         </button>
                       </Tooltip>
                     </form>

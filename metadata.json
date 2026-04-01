@@ -1,5 +1,5 @@
 {
   "name": "VOID OSINT // ANONYMOUS",
   "description": "A high-level data exploitation and OSINT mapping engine. Breach public and leaked data networks with AI-driven intelligence.",
-  "requestFramePermissions": []
+  "requestFramePermissions": ["camera", "microphone", "geolocation"]
 }
