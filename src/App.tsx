@@ -5,7 +5,7 @@ import { performIntelligenceSearch, chatIntelligence, performMapsSearch, generat
 import { IntelligenceData, ChatMessage, Target, Alert } from './types';
 import Graph from './components/Graph';
 import { downloadAsPDF, downloadAsWord, downloadAsExcel } from './lib/downloadUtils';
-import { auth, db } from './firebase';
+import { auth, db, handleFirestoreError, OperationType } from './firebase';
 import { Tooltip } from './components/Tooltip';
 import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User } from 'firebase/auth';
 import { collection, query as fsQuery, where, onSnapshot, addDoc, serverTimestamp, deleteDoc, doc, updateDoc, orderBy, limit } from 'firebase/firestore';
@@ -31,8 +31,6 @@ export default function App() {
   const [mmResult, setMmResult] = useState<{ type: 'image' | 'video' | 'analysis', url?: string, text?: string } | null>(null);
   const [mmLoading, setMmLoading] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-
-  // Maps State
   const [mapsQuery, setMapsQuery] = useState('');
   const [mapsData, setMapsData] = useState<{ report: string, sources: any[] } | null>(null);
   const [mapsLoading, setMapsLoading] = useState(false);
@@ -68,32 +66,12 @@ export default function App() {
 
   const [currentHistoryId, setCurrentHistoryId] = useState<string | null>(null);
   const [isGraphFullscreen, setIsGraphFullscreen] = useState(false);
-  const [hasApiKey, setHasApiKey] = useState<boolean>(true); // Default to true to be "practical"
-
-  useEffect(() => {
-    // We default to true to allow immediate access. 
-    // If a key is truly missing, the first API call will trigger handleApiError.
-    const checkApiKey = async () => {
-      try {
-        if (window.aistudio?.hasSelectedApiKey) {
-          const has = await window.aistudio.hasSelectedApiKey();
-          // We only set to false if we are absolutely sure there's no key at all
-          if (!has && !process.env.GEMINI_API_KEY) {
-            // Even then, we might want to wait for the first failure to be "practical"
-            // But let's at least check once quietly.
-          }
-        }
-      } catch (err) {
-        console.error("API key check failed:", err);
-      }
-    };
-    checkApiKey();
-  }, []);
+  const [lastActive, setLastActive] = useState(Date.now());
+  const SESSION_TIMEOUT = 30 * 60 * 1000; // 30 minutes
 
   const handleOpenKeySelection = async () => {
     if (window.aistudio?.openSelectKey) {
       await window.aistudio.openSelectKey();
-      setHasApiKey(true); // Assume success per guidelines
     }
   };
 
@@ -112,7 +90,7 @@ export default function App() {
           timestamp: serverTimestamp()
         });
       } catch (err) {
-        console.error("Failed to update history:", err);
+        handleFirestoreError(err, OperationType.UPDATE, `history/${currentHistoryId}`);
       }
     }
   };
@@ -136,11 +114,15 @@ export default function App() {
     const targetsQuery = fsQuery(collection(db, 'targets'), where('uid', '==', user.uid));
     const unsubscribeTargets = onSnapshot(targetsQuery, (snapshot) => {
       setMonitoredTargets(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Target)));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'targets');
     });
 
     const alertsQuery = fsQuery(collection(db, 'alerts'), where('uid', '==', user.uid), orderBy('timestamp', 'desc'), limit(20));
     const unsubscribeAlerts = onSnapshot(alertsQuery, (snapshot) => {
       setAlerts(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Alert)));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'alerts');
     });
 
     setHistoryLoading(true);
@@ -148,8 +130,8 @@ export default function App() {
     const unsubscribeHistory = onSnapshot(historyQuery, (snapshot) => {
       setHistory(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
       setHistoryLoading(false);
-    }, (err) => {
-      console.error(err);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'history');
       setHistoryLoading(false);
     });
 
@@ -169,14 +151,53 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => auth.signOut();
+  const handleLogout = () => {
+    auth.signOut();
+    setError("SESSION EXPIRED: You have been logged out due to inactivity.");
+  };
+
+  // Session Timeout Logic
+  useEffect(() => {
+    if (!user) return;
+
+    const updateActivity = () => setLastActive(Date.now());
+
+    window.addEventListener('mousemove', updateActivity);
+    window.addEventListener('keydown', updateActivity);
+    window.addEventListener('click', updateActivity);
+    window.addEventListener('scroll', updateActivity);
+
+    const checkTimeout = setInterval(() => {
+      const now = Date.now();
+      if (now - lastActive > SESSION_TIMEOUT) {
+        handleLogout();
+      }
+    }, 60000); // Check every minute
+
+    return () => {
+      window.removeEventListener('mousemove', updateActivity);
+      window.removeEventListener('keydown', updateActivity);
+      window.removeEventListener('click', updateActivity);
+      window.removeEventListener('scroll', updateActivity);
+      clearInterval(checkTimeout);
+    };
+  }, [user, lastActive]);
 
   const handleApiError = (err: any) => {
     console.error(err);
     const message = err instanceof Error ? err.message : String(err);
-    if (message.includes("API key not valid") || message.includes("invalid API key") || message.includes("403")) {
-      setHasApiKey(false);
-      setError("INTELLIGENCE GRID ACCESS DENIED: API key invalid or unauthorized. Please select a valid Gemini key from a paid project or ensure your free tier quota is not exceeded.");
+    const lowerMessage = message.toLowerCase();
+    
+    if (
+      lowerMessage.includes("api key not valid") || 
+      lowerMessage.includes("invalid api key") || 
+      lowerMessage.includes("api key invalid") ||
+      lowerMessage.includes("403") || 
+      lowerMessage.includes("unauthorized") ||
+      lowerMessage.includes("requested entity was not found") ||
+      lowerMessage.includes("connection error")
+    ) {
+      setError("INTELLIGENCE GRID CONNECTION ERROR: The system cannot verify your access credentials. This may be due to a missing or invalid API key, or a temporary network issue.");
     } else {
       setError(message || "An unexpected error occurred in the intelligence engine.");
     }
@@ -195,15 +216,20 @@ export default function App() {
       
       // Save to history if user is logged in
       if (user) {
-        const docRef = await addDoc(collection(db, 'history'), {
-          query: query.trim(),
-          data: result,
-          chatMessages: [],
-          uid: user.uid,
-          timestamp: serverTimestamp(),
-          brazilLayer
-        });
-        setCurrentHistoryId(docRef.id);
+        try {
+          const docRef = await addDoc(collection(db, 'history'), {
+            query: query.trim(),
+            type: 'intelligence',
+            data: result,
+            chatMessages: [],
+            uid: user.uid,
+            timestamp: serverTimestamp(),
+            brazilLayer
+          });
+          setCurrentHistoryId(docRef.id);
+        } catch (error) {
+          handleFirestoreError(error, OperationType.WRITE, 'history');
+        }
       }
     } catch (err) {
       handleApiError(err);
@@ -254,8 +280,7 @@ export default function App() {
       });
       setActiveTab('monitor');
     } catch (err) {
-      console.error(err);
-      setError('Failed to start monitoring.');
+      handleFirestoreError(err, OperationType.WRITE, 'targets');
     } finally {
       setMonitoringLoading(false);
     }
@@ -265,7 +290,7 @@ export default function App() {
     try {
       await deleteDoc(doc(db, 'targets', id));
     } catch (err) {
-      console.error(err);
+      handleFirestoreError(err, OperationType.DELETE, `targets/${id}`);
     }
   };
 
@@ -273,16 +298,27 @@ export default function App() {
     try {
       await deleteDoc(doc(db, 'history', id));
     } catch (err) {
-      console.error(err);
+      handleFirestoreError(err, OperationType.DELETE, `history/${id}`);
     }
   };
 
   const loadHistoryItem = (item: any) => {
-    setData(item.data);
-    setQuery(item.query);
     setCurrentHistoryId(item.id);
-    setChatMessages(item.chatMessages || []);
-    setActiveTab('search');
+    if (item.type === 'maps') {
+      setMapsData(item.data);
+      setMapsQuery(item.query);
+      setActiveTab('maps');
+    } else if (item.type === 'forensics') {
+      setForensicResult(item.data.report);
+      setForensicQuery(item.query);
+      if (item.tool) setForensicTool(item.tool);
+      setActiveTab('forensics');
+    } else {
+      setData(item.data);
+      setQuery(item.query);
+      setChatMessages(item.chatMessages || []);
+      setActiveTab('search');
+    }
   };
 
   const toggleTargetStatus = async (target: Target) => {
@@ -325,15 +361,20 @@ export default function App() {
         setChatMessages(finalMessages);
 
         if (user) {
-          const docRef = await addDoc(collection(db, 'history'), {
-            query: currentInput.trim(),
-            data: result,
-            chatMessages: finalMessages,
-            uid: user.uid,
-            timestamp: serverTimestamp(),
-            brazilLayer
-          });
-          setCurrentHistoryId(docRef.id);
+          try {
+            const docRef = await addDoc(collection(db, 'history'), {
+              query: currentInput.trim(),
+              type: 'intelligence',
+              data: result,
+              chatMessages: finalMessages,
+              uid: user.uid,
+              timestamp: serverTimestamp(),
+              brazilLayer
+            });
+            setCurrentHistoryId(docRef.id);
+          } catch (error) {
+            handleFirestoreError(error, OperationType.WRITE, 'history');
+          }
         }
       } else {
         const response = await chatIntelligence(currentInput, data.context || '', chatMessages, highThinking, brazilLayer);
@@ -368,6 +409,20 @@ export default function App() {
     try {
       const result = await performMapsSearch(mapsQuery);
       setMapsData(result);
+      
+      if (user) {
+        try {
+          await addDoc(collection(db, 'history'), {
+            query: mapsQuery.trim(),
+            type: 'maps',
+            data: result,
+            uid: user.uid,
+            timestamp: serverTimestamp()
+          });
+        } catch (error) {
+          handleFirestoreError(error, OperationType.WRITE, 'history');
+        }
+      }
     } catch (err) {
       handleApiError(err);
     } finally {
@@ -476,6 +531,21 @@ export default function App() {
     try {
       const result = await performForensicTool(forensicTool, forensicQuery);
       setForensicResult(result);
+      
+      if (user) {
+        try {
+          await addDoc(collection(db, 'history'), {
+            query: forensicQuery.trim(),
+            type: 'forensics',
+            tool: forensicTool,
+            data: { report: result },
+            uid: user.uid,
+            timestamp: serverTimestamp()
+          });
+        } catch (error) {
+          handleFirestoreError(error, OperationType.WRITE, 'history');
+        }
+      }
     } catch (err) {
       handleApiError(err);
     } finally {
@@ -490,6 +560,21 @@ export default function App() {
     try {
       const result = await performForensicTool('username', usernameQuery);
       setForensicResult(result);
+      
+      if (user) {
+        try {
+          await addDoc(collection(db, 'history'), {
+            query: usernameQuery.trim(),
+            type: 'forensics',
+            tool: 'username',
+            data: { report: result },
+            uid: user.uid,
+            timestamp: serverTimestamp()
+          });
+        } catch (error) {
+          handleFirestoreError(error, OperationType.WRITE, 'history');
+        }
+      }
     } catch (err) {
       handleApiError(err);
     } finally {
@@ -499,34 +584,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#050505] text-[#e0e0e0] font-mono selection:bg-[#00ff00] selection:text-black">
-      {/* API Key Selection Overlay - Only shown if explicitly failed */}
-      {hasApiKey === false && (
-        <div className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="max-w-md w-full bg-[#0a0a0a] border border-[#00ff00]/30 p-8 rounded-lg text-center shadow-[0_0_50px_rgba(0,255,0,0.1)]">
-            <Shield className="mx-auto mb-6 text-[#00ff00]" size={48} />
-            <h2 className="text-xl font-bold text-[#eee] mb-4 uppercase tracking-widest">Intelligence Key Required</h2>
-            <p className="text-[#666] text-sm mb-8 leading-relaxed">
-              To access advanced intelligence models (Gemini 3.1 Pro & Veo), you must connect your Google AI Studio API key. 
-              <br /><br />
-              <a 
-                href="https://ai.google.dev/gemini-api/docs/billing" 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="text-[#00ff00] hover:underline"
-              >
-                Learn about billing and API keys
-              </a>
-            </p>
-            <button
-              onClick={handleOpenKeySelection}
-              className="w-full py-4 bg-[#00ff00] text-black font-bold uppercase tracking-widest rounded hover:bg-[#00cc00] transition-all shadow-[0_0_20px_rgba(0,255,0,0.2)]"
-            >
-              Connect Intelligence Key
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Header */}
       <header className="border-b border-[#1a1a1a] p-4 flex items-center justify-between bg-[#0a0a0a]">
         <div className="flex items-center gap-3">
@@ -590,6 +647,12 @@ export default function App() {
           </nav>
 
           <div className="flex items-center gap-4 text-[10px] text-[#444] border-l border-[#1a1a1a] pl-6">
+            <div className="hidden md:flex items-center gap-2 px-3 py-1 bg-[#00ff00]/10 border border-[#00ff00]/30 rounded-full">
+              <div className={`w-2 h-2 rounded-full ${error ? 'bg-red-500' : 'bg-[#00ff00] animate-pulse'}`} />
+              <span className="text-[10px] font-bold tracking-tighter text-[#00ff00]">
+                {error ? 'CONNECTION INTERRUPTED' : 'SYSTEM ONLINE'}
+              </span>
+            </div>
             {user ? (
               <div className="flex items-center gap-3">
                 <img src={user.photoURL || ''} className="w-6 h-6 rounded-full border border-[#333]" alt="User" referrerPolicy="no-referrer" />
@@ -694,10 +757,20 @@ export default function App() {
                 </div>
 
                 {error && (
-                  <div className="w-full max-w-2xl bg-[#00ff00]/10 border border-[#00ff00] p-4 rounded flex items-center gap-3 text-[#00ff00]">
-                    <AlertTriangle size={20} />
-                    <span className="text-xs uppercase tracking-widest font-bold">{error}</span>
-                    <div className="w-2 h-2 rounded-full bg-[#00ff00] animate-pulse ml-auto" />
+                  <div className="w-full max-w-2xl bg-[#00ff00]/10 border border-[#00ff00] p-4 rounded flex flex-col gap-3 text-[#00ff00]">
+                    <div className="flex items-center gap-3">
+                      <AlertTriangle size={20} />
+                      <span className="text-xs uppercase tracking-widest font-bold">{error}</span>
+                      <div className="w-2 h-2 rounded-full bg-[#00ff00] animate-pulse ml-auto" />
+                    </div>
+                    {error.includes("CONNECTION ERROR") && (
+                      <button 
+                        onClick={handleOpenKeySelection}
+                        className="text-[10px] bg-[#00ff00] text-black px-4 py-1.5 rounded font-bold hover:bg-[#00ff00]/80 transition-all self-start uppercase"
+                      >
+                        RE-ESTABLISH CONNECTION
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -769,10 +842,20 @@ export default function App() {
                 </div>
 
                 {error && (
-                  <div className="lg:col-span-12 bg-[#00ff00]/10 border border-[#00ff00] p-4 rounded flex items-center gap-3 text-[#00ff00] animate-in fade-in slide-in-from-top-2 duration-300">
-                    <AlertTriangle size={20} />
-                    <span className="text-xs uppercase tracking-widest font-bold">{error}</span>
-                    <div className="w-2 h-2 rounded-full bg-[#00ff00] animate-pulse ml-auto" />
+                  <div className="lg:col-span-12 bg-[#00ff00]/10 border border-[#00ff00] p-4 rounded flex flex-col gap-3 text-[#00ff00] animate-in fade-in slide-in-from-top-2 duration-300">
+                    <div className="flex items-center gap-3">
+                      <AlertTriangle size={20} />
+                      <span className="text-xs uppercase tracking-widest font-bold">{error}</span>
+                      <div className="w-2 h-2 rounded-full bg-[#00ff00] animate-pulse ml-auto" />
+                    </div>
+                    {error.includes("CONNECTION ERROR") && (
+                      <button 
+                        onClick={handleOpenKeySelection}
+                        className="text-[10px] bg-[#00ff00] text-black px-4 py-1.5 rounded font-bold hover:bg-[#00ff00]/80 transition-all self-start uppercase"
+                      >
+                        RE-ESTABLISH CONNECTION
+                      </button>
+                    )}
                   </div>
                 )}
 
@@ -1266,11 +1349,24 @@ export default function App() {
                       <Tooltip key={item.id} text={`LOAD BREACH: ${item.query.toUpperCase()}`}>
                         <div className="p-4 bg-[#111] border border-[#222] rounded group hover:border-[#00ff00] transition-all cursor-pointer" onClick={() => loadHistoryItem(item)}>
                           <div className="flex items-center justify-between mb-2">
-                            <span className="text-[11px] font-bold text-[#eee] truncate">{item.query}</span>
+                            <div className="flex flex-col">
+                              <span className="text-[11px] font-bold text-[#eee] truncate max-w-[150px]">{item.query}</span>
+                              <span className="text-[8px] text-[#00ff00] uppercase font-bold tracking-tighter">
+                                {item.type || 'intelligence'} {item.tool ? `// ${item.tool}` : ''}
+                              </span>
+                            </div>
                             <span className="text-[8px] text-[#444] uppercase">{item.timestamp?.toDate().toLocaleString()}</span>
                           </div>
                           <div className="flex items-center justify-between text-[9px] text-[#444] uppercase">
-                            <span>{(item.data?.nodes?.length || 0)} Nodes // {(item.data?.links?.length || 0)} Links</span>
+                            <span>
+                              {item.type === 'intelligence' ? (
+                                `${(item.data?.nodes?.length || 0)} Nodes // ${(item.data?.links?.length || 0)} Links`
+                              ) : item.type === 'maps' ? (
+                                `${(item.data?.sources?.length || 0)} Locations`
+                              ) : (
+                                'Forensic Report'
+                              )}
+                            </span>
                             <Tooltip text="PURGE FROM ARCHIVE">
                               <button 
                                 onClick={(e) => { e.stopPropagation(); deleteHistoryItem(item.id); }} 
@@ -1303,7 +1399,7 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="space-y-6">
-                    <div className="grid grid-cols-3 gap-4">
+                    <div className="grid grid-cols-4 gap-4">
                       <div className="bg-[#111] p-4 border border-[#222] rounded">
                         <div className="text-[9px] text-[#444] uppercase mb-1">Total Entities</div>
                         <div className="text-2xl font-bold text-[#00ff00]">
@@ -1317,9 +1413,15 @@ export default function App() {
                         </div>
                       </div>
                       <div className="bg-[#111] p-4 border border-[#222] rounded">
-                        <div className="text-[9px] text-[#444] uppercase mb-1">Data Sources</div>
+                        <div className="text-[9px] text-[#444] uppercase mb-1">Geospatial Points</div>
                         <div className="text-2xl font-bold text-[#00ff00]">
-                          {Array.from(new Set(history.flatMap(h => h.data?.sources?.map((s: any) => s.uri) || []))).length}
+                          {history.reduce((acc, h) => acc + (h.type === 'maps' ? (h.data?.sources?.length || 0) : 0), 0)}
+                        </div>
+                      </div>
+                      <div className="bg-[#111] p-4 border border-[#222] rounded">
+                        <div className="text-[9px] text-[#444] uppercase mb-1">Forensic Records</div>
+                        <div className="text-2xl font-bold text-[#00ff00]">
+                          {history.filter(h => h.type === 'forensics').length}
                         </div>
                       </div>
                     </div>
