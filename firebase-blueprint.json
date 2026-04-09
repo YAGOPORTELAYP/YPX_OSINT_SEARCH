@@ -51,6 +51,32 @@
         "uid": { "type": "string", "description": "Owner's user ID." }
       },
       "required": ["query", "data", "timestamp", "uid"]
+    },
+    "Feedback": {
+      "title": "Feedback",
+      "description": "User feedback on intelligence results to improve the system.",
+      "type": "object",
+      "properties": {
+        "sourceId": { "type": "string", "description": "ID of the history item or alert." },
+        "type": { "type": "string", "enum": ["correction", "error", "praise"] },
+        "comment": { "type": "string" },
+        "originalData": { "type": "object" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "uid": { "type": "string" }
+      },
+      "required": ["sourceId", "type", "comment", "timestamp", "uid"]
+    },
+    "LearnedPattern": {
+      "title": "LearnedPattern",
+      "description": "A summarized lesson learned from feedback or errors.",
+      "type": "object",
+      "properties": {
+        "pattern": { "type": "string" },
+        "context": { "type": "string" },
+        "weight": { "type": "number" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["pattern", "timestamp"]
     }
   },
   "firestore": {
@@ -65,6 +91,14 @@
     "/history/{historyId}": {
       "schema": "HistoryItem",
       "description": "Historical intelligence search records."
+    },
+    "/feedback/{feedbackId}": {
+      "schema": "Feedback",
+      "description": "User feedback for system improvement."
+    },
+    "/learned_patterns/{patternId}": {
+      "schema": "LearnedPattern",
+      "description": "Global knowledge base of learned behaviors."
     }
   }
 }

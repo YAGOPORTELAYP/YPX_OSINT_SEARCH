@@ -2,11 +2,16 @@ export interface Node {
   id: string;
   label: string;
   type: 'target' | 'email' | 'domain' | 'social' | 'leak' | 'public_data' | 'person' | 'company' | 'political' | 'financial';
+  x?: number;
+  y?: number;
+  fx?: number | null;
+  fy?: number | null;
+  imageUrl?: string;
 }
 
 export interface Link {
-  source: string;
-  target: string;
+  source: string | any;
+  target: string | any;
   label?: string;
 }
 
@@ -38,6 +43,8 @@ export interface IntelligenceData {
   nodes: Node[];
   links: Link[];
   report: string;
+  hypothesis?: string;
+  strategy?: string;
   sources: { uri: string; title: string }[];
   context?: string; // Store the raw context for chat
 }

@@ -90,6 +90,21 @@ service cloud.firestore {
              data.uid == request.auth.uid;
     }
 
+    function isValidFeedback(data) {
+      return data.sourceId is string &&
+             data.type in ['correction', 'error', 'praise'] &&
+             data.comment is string && data.comment.size() > 0 && data.comment.size() < 5000 &&
+             data.timestamp is timestamp &&
+             data.uid == request.auth.uid;
+    }
+
+    function isValidPattern(data) {
+      return data.pattern is string && data.pattern.size() > 0 && data.pattern.size() < 2000 &&
+             (!('context' in data) || data.context is string) &&
+             (!('weight' in data) || data.weight is number) &&
+             data.timestamp is timestamp;
+    }
+
     // Rules
     match /targets/{targetId} {
       allow read: if isDocOwner();
@@ -110,6 +125,17 @@ service cloud.firestore {
       allow create: if isAuthenticated() && isValidHistory(request.resource.data) && uidUnchanged();
       allow update: if isDocOwner() && isValidHistory(request.resource.data) && uidNotModified();
       allow delete: if isDocOwner();
+    }
+
+    match /feedback/{feedbackId} {
+      allow read: if isDocOwner();
+      allow create: if isAuthenticated() && isValidFeedback(request.resource.data) && uidUnchanged();
+      allow delete: if isDocOwner();
+    }
+
+    match /learned_patterns/{patternId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated(); // In a real app, this would be restricted to an admin/system role
     }
   }
 }

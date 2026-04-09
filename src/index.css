@@ -6,6 +6,7 @@
   --color-bg-dark: #050505;
   --color-border: #111;
   --color-border-active: #00ff00;
+  --animate-spin-slow: spin 3s linear infinite;
 }
 
 @keyframes glitch {
@@ -36,4 +37,14 @@
 
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
   background: #00ff00;
+}
+
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
 }

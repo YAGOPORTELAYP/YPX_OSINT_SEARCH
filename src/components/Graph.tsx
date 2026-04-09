@@ -1,16 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import { Node, Link } from '../types';
-import { ZoomIn, ZoomOut, Maximize, MousePointer2, Target } from 'lucide-react';
+import { ZoomIn, ZoomOut, Maximize, MousePointer2, Target, RefreshCw } from 'lucide-react';
 
 interface GraphProps {
   nodes: Node[];
   links: Link[];
   onNodeClick?: (node: Node) => void;
+  onNodeDragEnd?: (nodes: Node[]) => void;
   selectedNodeId?: string | null;
 }
 
-const Graph: React.FC<GraphProps> = ({ nodes, links, onNodeClick, selectedNodeId }) => {
+const Graph: React.FC<GraphProps> = ({ nodes, links, onNodeClick, onNodeDragEnd, selectedNodeId }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [zoomLevel, setZoomLevel] = useState(1);
@@ -51,6 +52,23 @@ const Graph: React.FC<GraphProps> = ({ nodes, links, onNodeClick, selectedNodeId
       .attr("d", "M 0,-5 L 10 ,0 L 0,5")
       .attr("fill", "#00ff00")
       .style("stroke", "none");
+
+    // Create patterns for node images
+    const defs = svg.select("defs");
+    nodes.forEach(n => {
+      if (n.imageUrl) {
+        defs.append("pattern")
+          .attr("id", `pattern-${n.id.replace(/[^a-zA-Z0-9]/g, '-')}`)
+          .attr("width", 1)
+          .attr("height", 1)
+          .attr("patternUnits", "objectBoundingBox")
+          .append("image")
+          .attr("href", n.imageUrl)
+          .attr("width", 24)
+          .attr("height", 24)
+          .attr("preserveAspectRatio", "xMidYMid slice");
+      }
+    });
 
     const simulation = d3.forceSimulation<any>(nodes)
       .force("link", d3.forceLink<any, any>(links).id(d => d.id).distance(150))
@@ -94,7 +112,7 @@ const Graph: React.FC<GraphProps> = ({ nodes, links, onNodeClick, selectedNodeId
 
     node.append("circle")
       .attr("r", d => d.id === selectedNodeId ? 12 : 8)
-      .attr("fill", d => "#00ff00")
+      .attr("fill", d => d.imageUrl ? `url(#pattern-${d.id.replace(/[^a-zA-Z0-9]/g, '-')})` : "#00ff00")
       .attr("stroke", d => d.id === selectedNodeId ? "#00ff00" : "#00ff0033")
       .attr("stroke-width", d => d.id === selectedNodeId ? 3 : 1)
       .style("filter", d => d.id === selectedNodeId ? "drop-shadow(0 0 8px #00ff00)" : "none");
@@ -136,8 +154,20 @@ const Graph: React.FC<GraphProps> = ({ nodes, links, onNodeClick, selectedNodeId
 
     function dragended(event: any) {
       if (!event.active) simulation.alphaTarget(0);
-      event.subject.fx = null;
-      event.subject.fy = null;
+      // Keep fx and fy to persist position
+      event.subject.fx = event.x;
+      event.subject.fy = event.y;
+      
+      if (onNodeDragEnd) {
+        // Return updated nodes with their current positions
+        onNodeDragEnd(nodes.map(n => ({
+          ...n,
+          x: n.x,
+          y: n.y,
+          fx: n.fx,
+          fy: n.fy
+        })));
+      }
     }
 
     // Expose zoom controls
@@ -163,6 +193,15 @@ const Graph: React.FC<GraphProps> = ({ nodes, links, onNodeClick, selectedNodeId
   const handleZoomIn = () => (svgRef.current as any)?.zoomIn?.();
   const handleZoomOut = () => (svgRef.current as any)?.zoomOut?.();
   const handleResetZoom = () => (svgRef.current as any)?.resetZoom?.();
+  const handleResetLayout = () => {
+    if (onNodeDragEnd) {
+      onNodeDragEnd(nodes.map(n => ({
+        ...n,
+        fx: null,
+        fy: null
+      })));
+    }
+  };
   const handleCenterOnSelected = () => {
     if (selectedNodeId) {
       (svgRef.current as any)?.centerOnNode?.(selectedNodeId);
@@ -195,6 +234,13 @@ const Graph: React.FC<GraphProps> = ({ nodes, links, onNodeClick, selectedNodeId
           title="Reset View"
         >
           <Maximize size={18} />
+        </button>
+        <button 
+          onClick={handleResetLayout}
+          className="p-2 bg-[#1a1a1a] border border-[#333] text-[#00ff00] rounded hover:bg-[#222] transition-colors"
+          title="Reset Layout"
+        >
+          <RefreshCw size={18} />
         </button>
         {selectedNodeId && (
           <button 
