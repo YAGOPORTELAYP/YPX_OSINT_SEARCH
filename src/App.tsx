@@ -90,6 +90,7 @@ export default function App() {
 
   const [currentHistoryId, setCurrentHistoryId] = useState<string | null>(null);
   const [isGraphFullscreen, setIsGraphFullscreen] = useState(false);
+  const [liteMode, setLiteMode] = useState(false);
   const [lastActive, setLastActive] = useState(Date.now());
   const [lastSavedData, setLastSavedData] = useState<string>('');
   const [lastSavedChat, setLastSavedChat] = useState<string>('');
@@ -108,6 +109,9 @@ export default function App() {
   const handleInurlbrScan = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inurlbrDork.trim()) return;
+
+    if (!await ensureApiKeySelected()) return;
+
     setInurlbrLoading(true);
     setInurlbrResults([]);
     setInurlbrReport(null);
@@ -176,6 +180,9 @@ export default function App() {
   const handleConnectivitySearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!ibcMunicipality.trim()) return;
+
+    if (!await ensureApiKeySelected()) return;
+
     setIbcLoading(true);
     setIbcData(null);
     try {
@@ -205,6 +212,9 @@ export default function App() {
   const handleSherlockSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!sherlockUsername.trim()) return;
+
+    if (!await ensureApiKeySelected()) return;
+
     setSherlockLoading(true);
     setSherlockResults([]);
     setSherlockReport(null);
@@ -235,6 +245,9 @@ export default function App() {
 
   const handleAnalyzeSocialMedia = async () => {
     if (!data?.report) return;
+
+    if (!await ensureApiKeySelected()) return;
+
     setLoading(true);
     try {
       const result = await analyzeSocialMedia(data.report, data.nodes, data.links, highThinking);
@@ -463,7 +476,12 @@ export default function App() {
     const message = err instanceof Error ? err.message : String(err);
     const lowerMessage = message.toLowerCase();
     
-    if (
+    if (lowerMessage.includes("quota") || lowerMessage.includes("rate limit") || lowerMessage.includes("429")) {
+      setError("INTELLIGENCE GRID QUOTA EXCEEDED: You have reached the request limit for your Intelligence Key. Please wait a few minutes or use a different key.");
+    } else if (lowerMessage.includes("paid project") || lowerMessage.includes("billing") || lowerMessage.includes("upgrade")) {
+      setError("INTELLIGENCE GRID RESTRICTION: This feature requires a Paid Project or Billing enabled. I've automatically optimized your session for LITE MODE to continue using free resources.");
+      setLiteMode(true);
+    } else if (
       lowerMessage.includes("api key not valid") || 
       lowerMessage.includes("invalid api key") || 
       lowerMessage.includes("api key invalid") ||
@@ -554,11 +572,14 @@ export default function App() {
     e.preventDefault();
     if (!query.trim()) return;
 
+    const hasKey = await ensureApiKeySelected();
+    if (!hasKey) return;
+
     setLoading(true);
     setError(null);
     setChatMessages([]); 
     try {
-      const result = await performIntelligenceSearch(query, false, brazilLayer);
+      const result = await performIntelligenceSearch(query, false, brazilLayer, liteMode);
       setData(result);
       setLastSavedData(JSON.stringify(result));
       setLastSavedChat(JSON.stringify([]));
@@ -686,9 +707,75 @@ export default function App() {
     }
   };
 
+  const handleContinueChat = async () => {
+    if (chatLoading || !data) return;
+
+    const hasKey = await ensureApiKeySelected();
+    if (!hasKey) return;
+
+    setChatLoading(true);
+    setError(null);
+    try {
+      const response = await chatIntelligence(
+        '[CONTINUE GENERATION FROM LAST POINT]',
+        JSON.stringify({ nodes: data.nodes, links: data.links }),
+        chatMessages,
+        highThinking,
+        brazilLayer,
+        liteMode
+      );
+      
+      let updatedData = data;
+      if (response.nodes || response.links) {
+        const existingNodeIds = new Set(data.nodes.map(n => n.id));
+        const newNodes = (response.nodes || []).filter(n => !existingNodeIds.has(n.id));
+        const allNodeIds = new Set([...existingNodeIds, ...newNodes.map(n => n.id)]);
+        
+        const existingLinkKeys = new Set(data.links.map(l => {
+          const s = typeof l.source === 'string' ? l.source : l.source.id;
+          const t = typeof l.target === 'string' ? l.target : l.target.id;
+          return `${s}-${t}-${l.label}`;
+        }));
+        const newLinks = (response.links || []).filter(l => {
+          const s = typeof l.source === 'string' ? l.source : l.source.id;
+          const t = typeof l.target === 'string' ? l.target : l.target.id;
+          return !existingLinkKeys.has(`${s}-${t}-${l.label}`) &&
+                 allNodeIds.has(s) &&
+                 allNodeIds.has(t);
+        });
+        
+        if (newNodes.length > 0 || newLinks.length > 0) {
+          updatedData = {
+            ...data,
+            nodes: [...data.nodes, ...newNodes],
+            links: [...data.links, ...newLinks]
+          };
+        }
+      }
+      
+      const finalMessages: ChatMessage[] = [...chatMessages, { role: 'model', text: response.text }];
+      updateHistory(updatedData, finalMessages);
+      
+      if (user && currentHistoryId) {
+        updateDoc(doc(db, 'history', currentHistoryId), {
+          data: sanitize(updatedData),
+          chatMessages: sanitize(finalMessages),
+          timestamp: serverTimestamp()
+        }).catch(err => console.error("Failed to save continued message:", err));
+      }
+    } catch (err) {
+      handleApiError(err);
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
   const handleChat = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatInput.trim() || chatLoading) return;
+
+    const hasKey = await ensureApiKeySelected();
+    if (!hasKey) return;
 
     const userMsg: ChatMessage = { role: 'user', text: chatInput };
     const updatedMessages = [...chatMessages, userMsg];
@@ -732,7 +819,7 @@ export default function App() {
           }
         }
       } else {
-        const response = await chatIntelligence(currentInput, JSON.stringify({ nodes: data.nodes, links: data.links }), chatMessages, false, brazilLayer);
+        const response = await chatIntelligence(currentInput, JSON.stringify({ nodes: data.nodes, links: data.links }), chatMessages, false, brazilLayer, liteMode);
         
         let updatedData = data;
         if (response.nodes || response.links) {
@@ -780,7 +867,7 @@ export default function App() {
     if (!mapsQuery.trim()) return;
     setMapsLoading(true);
     try {
-      const result = await performMapsSearch(mapsQuery);
+      const result = await performMapsSearch(mapsQuery, undefined, undefined, liteMode);
       setMapsData(result);
       
       if (user) {
@@ -984,7 +1071,7 @@ export default function App() {
     if (!await ensureApiKeySelected()) return;
     setExpandingNodeId(nodeId);
     try {
-      const result = await expandIntelligenceNode(nodeId, nodeLabel, data, highThinking, brazilLayer);
+      const result = await expandIntelligenceNode(nodeId, nodeLabel, data, highThinking, brazilLayer, liteMode);
       
       // Merge new nodes and links
       const existingNodeIds = new Set(data.nodes.map(n => n.id));
@@ -1111,6 +1198,18 @@ export default function App() {
         </div>
         
         <div className="flex flex-col sm:flex-row items-center gap-4 w-full md:w-auto">
+            <div className="flex items-center gap-2 bg-black/50 border border-[#1a1a1a] px-3 py-1.5 rounded">
+              <span className={`text-[8px] font-bold uppercase ${liteMode ? 'text-yellow-500' : 'text-[#00ff00]'}`}>
+                {liteMode ? 'Lite Mode Active' : 'Full Grid Active'}
+              </span>
+              <button 
+                onClick={() => setLiteMode(!liteMode)}
+                className={`w-8 h-4 rounded-full relative transition-all ${liteMode ? 'bg-yellow-500/20' : 'bg-[#00ff00]/20'}`}
+              >
+                <div className={`absolute top-0.5 w-3 h-3 rounded-full transition-all ${liteMode ? 'right-0.5 bg-yellow-500' : 'left-0.5 bg-[#00ff00]'}`} />
+              </button>
+            </div>
+
             <nav className="flex items-center gap-1 bg-black p-1 rounded border border-[#1a1a1a] overflow-x-auto max-w-full no-scrollbar">
             <Tooltip text="INTELLIGENCE SEARCH">
               <button 
@@ -1811,6 +1910,14 @@ export default function App() {
                             <div className="prose prose-invert prose-xs prose-headings:text-[#00ff00] prose-a:text-[#00ff00]">
                               <Markdown>{msg.text}</Markdown>
                             </div>
+                            {msg.role === 'model' && i === chatMessages.length - 1 && (msg.text.endsWith(':') || msg.text.length > 5000) && (
+                              <button
+                                onClick={handleContinueChat}
+                                className="mt-2 text-[8px] font-bold text-[#00ff00] uppercase border border-[#00ff00]/30 px-2 py-1 rounded hover:bg-[#00ff00] hover:text-black transition-all flex items-center gap-1"
+                              >
+                                <RefreshCw size={10} /> Continue Generation
+                              </button>
+                            )}
                           </div>
                         </div>
                       ))}

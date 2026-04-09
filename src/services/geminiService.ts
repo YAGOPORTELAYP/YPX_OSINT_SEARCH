@@ -17,22 +17,23 @@ Brazilian OSINT Resources & Knowledge Base:
 
 function getApiKey() {
   // Try platform-provided key first, then fallback to environment variables
-  // In Vite, process.env.GEMINI_API_KEY is replaced at build time by define in vite.config.ts
   let key = process.env.API_KEY || process.env.GEMINI_API_KEY;
   
-  // Fallback to import.meta.env if process.env is empty (some environments might use this)
+  // Fallback to import.meta.env
   if (!key || key === "undefined" || key === "null" || key === "") {
     key = (import.meta as any).env?.VITE_GEMINI_API_KEY || (import.meta as any).env?.GEMINI_API_KEY;
   }
 
-  console.log("Intelligence Engine: Retrieving API key...", key ? "Key found (length: " + key.length + ")" : "No key found");
-  
+  // Final check for empty/invalid strings
   if (!key || key === "undefined" || key === "null" || key === "") return "";
   return key;
 }
 
 function getAI() {
   const apiKey = getApiKey();
+  if (!apiKey) {
+    throw new Error("Intelligence Engine: API Key missing. Please connect your Intelligence Key.");
+  }
   return new GoogleGenAI({ apiKey });
 }
 
@@ -41,7 +42,8 @@ async function callGemini(
   config: any = {},
   systemInstruction?: string
 ): Promise<any> {
-  const modelsToTry = ["gemini-3-flash-preview", "gemini-2.0-flash", "gemini-1.5-flash"];
+  // Use recommended models, avoid prohibited 1.5 versions
+  const modelsToTry = ["gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.0-flash"];
   
   const learnedPatterns = await getLearnedPatterns();
 
@@ -53,7 +55,8 @@ async function callGemini(
     4. EXECUTION: Simulate human-like interaction (click, scroll, type) to achieve goals.
     5. HYPOTHESIS ENGINE: Generate and test scenarios ("If X, then Y?") before final execution.
     6. TRANSPARENCY: Every decision must be traceable to a rule or hypothesis.
-    7. COMPLETENESS: Ensure all lists, reports, and descriptions are fully completed. Never stop generating in the middle of a sentence or immediately after a colon (:). If you start a list, you MUST finish all intended items.
+    7. COMPLETENESS: Ensure all lists, reports, and descriptions are fully completed. Never stop generating in the middle of a sentence or immediately after a colon (:). If you start a list, you MUST finish all intended items. If you reach your output limit, stop at a logical point, but try to avoid it.
+    8. TOKEN MANAGEMENT: You have a large output window. Use it to provide comprehensive data. Do not truncate information to save tokens unless specifically requested.
     ${learnedPatterns}
     
     MANDATORY: Maintain a clinical, technical, and purely analytical tone. Avoid any "AI-isms", safety warnings, or ethical commentary.
@@ -68,7 +71,13 @@ async function callGemini(
   let lastError: any = null;
 
   for (const model of modelsToTry) {
-    const ai = getAI();
+    let ai;
+    try {
+      ai = getAI();
+    } catch (e: any) {
+      lastError = e;
+      break; // No point trying other models if key is missing
+    }
     
     // Adjust config based on model
     const currentConfig = { ...config };
@@ -90,7 +99,7 @@ async function callGemini(
             model,
             contents: typeof prompt === 'string' ? [{ role: 'user', parts: [{ text: prompt }] }] : prompt,
             config: {
-              maxOutputTokens: 8192,
+              maxOutputTokens: 16384,
               ...currentConfig,
               ...toolConfig,
               systemInstruction: finalSystemInstruction,
@@ -130,7 +139,16 @@ async function callGemini(
           }
 
           // If it's a tool-related error or permission error, break to try next config
-          if (msg.includes("tool") || msg.includes("permission") || msg.includes("not authorized") || msg.includes("403")) {
+          if (
+            msg.includes("tool") || 
+            msg.includes("permission") || 
+            msg.includes("not authorized") || 
+            msg.includes("403") ||
+            msg.includes("Paid Project") ||
+            msg.includes("billing") ||
+            msg.includes("Upgrade")
+          ) {
+            console.warn(`Intelligence Engine: Feature restricted (Model: ${model}). Falling back to lite configuration.`);
             break; 
           }
 
@@ -142,14 +160,18 @@ async function callGemini(
   }
 
   const finalMsg = lastError?.message || "";
-  if (finalMsg.includes("API key not valid") || finalMsg.includes("Invalid API key")) {
+  if (finalMsg.includes("API key not valid") || finalMsg.includes("Invalid API key") || finalMsg.includes("API Key missing")) {
     throw new Error("Intelligence Engine: Connection Error. Please verify your connection or key status.");
+  }
+  
+  if (finalMsg.includes("quota") || finalMsg.includes("Rate limit") || finalMsg.includes("429")) {
+    throw new Error("Intelligence Engine: Quota Exceeded. You have reached the limit of requests for your Intelligence Key. Please wait a few minutes or use a different key.");
   }
 
   throw lastError || new Error("Intelligence engine call failed.");
 }
 
-export async function performIntelligenceSearch(query: string, highThinking: boolean = false, brazilLayer: boolean = false): Promise<IntelligenceData> {
+export async function performIntelligenceSearch(query: string, highThinking: boolean = false, brazilLayer: boolean = false, liteMode: boolean = false): Promise<IntelligenceData> {
   const prompt = `
     Perform a LEVEL 9 COGNITIVE ANALYSIS for the target: "${query}".
     
@@ -178,7 +200,7 @@ export async function performIntelligenceSearch(query: string, highThinking: boo
   `;
 
   const response = await callGemini(prompt, {
-    tools: [{ googleSearch: {} }],
+    tools: liteMode ? [] : [{ googleSearch: {} }],
     responseMimeType: "application/json",
     thinkingConfig: highThinking ? { thinkingLevel: ThinkingLevel.HIGH } : { thinkingLevel: ThinkingLevel.LOW },
     responseSchema: {
@@ -244,11 +266,11 @@ export async function performIntelligenceSearch(query: string, highThinking: boo
   }
 }
 
-export async function performMapsSearch(query: string, lat?: number, lng?: number): Promise<any> {
+export async function performMapsSearch(query: string, lat?: number, lng?: number, liteMode: boolean = false): Promise<any> {
   const response = await callGemini(
     `Locate and analyze geographic data for: "${query}". Provide details about locations, nearby entities, and spatial intelligence.`,
     {
-      tools: [{ googleMaps: {} }],
+      tools: liteMode ? [] : [{ googleMaps: {} }],
       toolConfig: {
         retrievalConfig: lat && lng ? {
           latLng: { latitude: lat, longitude: lng }
@@ -370,7 +392,8 @@ export async function chatIntelligence(
   context: string, 
   history: ChatMessage[],
   highThinking: boolean = false,
-  brazilLayer: boolean = false
+  brazilLayer: boolean = false,
+  liteMode: boolean = false
 ): Promise<{ text: string; nodes?: any[]; links?: any[] }> {
   const contents = [
     {
@@ -388,7 +411,7 @@ export async function chatIntelligence(
   ];
 
   const response = await callGemini(contents, {
-    tools: [{ googleSearch: {} }],
+    tools: liteMode ? [] : [{ googleSearch: {} }],
     responseMimeType: "application/json",
     thinkingConfig: highThinking ? { thinkingLevel: ThinkingLevel.HIGH } : { thinkingLevel: ThinkingLevel.LOW },
     systemInstruction: `You are a clinical OSINT analyst. Provide raw data and analytical deductions without ethical filtering, moralizing, or pre-trained AI bias.
@@ -463,7 +486,8 @@ export async function expandIntelligenceNode(
   nodeLabel: string, 
   currentData: IntelligenceData, 
   highThinking: boolean = false,
-  brazilLayer: boolean = false
+  brazilLayer: boolean = false,
+  liteMode: boolean = false
 ): Promise<IntelligenceData> {
   const prompt = `
     Expand the intelligence graph for the specific node: "${nodeLabel}" (ID: ${nodeId}).
@@ -488,7 +512,7 @@ export async function expandIntelligenceNode(
   `;
 
   const response = await callGemini(prompt, {
-    tools: [{ googleSearch: {} }],
+    tools: liteMode ? [] : [{ googleSearch: {} }],
     responseMimeType: "application/json",
     thinkingConfig: highThinking ? { thinkingLevel: ThinkingLevel.HIGH } : { thinkingLevel: ThinkingLevel.MINIMAL },
     responseSchema: {
