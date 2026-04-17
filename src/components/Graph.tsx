@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import { Node, Link } from '../types';
-import { ZoomIn, ZoomOut, Maximize, MousePointer2, Target, RefreshCw } from 'lucide-react';
+import { ZoomIn, ZoomOut, Maximize, MousePointer2, Target, RefreshCw, Search } from 'lucide-react';
 
 interface GraphProps {
   nodes: Node[];
@@ -15,6 +15,21 @@ const Graph: React.FC<GraphProps> = ({ nodes, links, onNodeClick, onNodeDragEnd,
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [zoomLevel, setZoomLevel] = useState(1);
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const typeColors: Record<string, string> = {
+    target: "#00ff00",
+    email: "#00ffff",
+    domain: "#ffff00",
+    social: "#ff00ff",
+    leak: "#ff0000",
+    public_data: "#ffffff",
+    person: "#00ff00",
+    company: "#3366ff",
+    political: "#ff9900",
+    financial: "#00cc66"
+  };
 
   useEffect(() => {
     if (!svgRef.current || !containerRef.current || !nodes || nodes.length === 0) return;
@@ -83,14 +98,26 @@ const Graph: React.FC<GraphProps> = ({ nodes, links, onNodeClick, onNodeDragEnd,
       .join("g");
 
     link.append("line")
-      .attr("stroke", "#00ff00")
-      .attr("stroke-opacity", 0.2)
-      .attr("stroke-width", 1)
+      .attr("stroke", d => {
+        const isHighlighted = hoveredNodeId === (d.source.id || d.source) || hoveredNodeId === (d.target.id || d.target);
+        return isHighlighted ? "#00ff00" : "#00ff0033";
+      })
+      .attr("stroke-opacity", d => {
+        const isHighlighted = hoveredNodeId === (d.source.id || d.source) || hoveredNodeId === (d.target.id || d.target);
+        return isHighlighted ? 0.8 : 0.2;
+      })
+      .attr("stroke-width", d => {
+        const isHighlighted = hoveredNodeId === (d.source.id || d.source) || hoveredNodeId === (d.target.id || d.target);
+        return isHighlighted ? 2 : 1;
+      })
       .attr("marker-end", "url(#arrowhead)");
 
     link.append("text")
       .attr("fill", "#00ff00")
-      .style("opacity", 0.5)
+      .style("opacity", d => {
+        const isHighlighted = hoveredNodeId === (d.source.id || d.source) || hoveredNodeId === (d.target.id || d.target);
+        return isHighlighted ? 1 : 0.3;
+      })
       .style("font-size", "8px")
       .style("font-family", "monospace")
       .attr("text-anchor", "middle")
@@ -105,26 +132,53 @@ const Graph: React.FC<GraphProps> = ({ nodes, links, onNodeClick, onNodeDragEnd,
       .on("click", (event, d) => {
         if (onNodeClick) onNodeClick(d);
       })
+      .on("mouseenter", (event, d) => {
+        setHoveredNodeId(d.id);
+      })
+      .on("mouseleave", () => {
+        setHoveredNodeId(null);
+      })
       .call(d3.drag<any, any>()
         .on("start", dragstarted)
         .on("drag", dragged)
         .on("end", dragended));
 
     node.append("circle")
-      .attr("r", d => d.id === selectedNodeId ? 12 : 8)
-      .attr("fill", d => d.imageUrl ? `url(#pattern-${d.id.replace(/[^a-zA-Z0-9]/g, '-')})` : "#00ff00")
-      .attr("stroke", d => d.id === selectedNodeId ? "#00ff00" : "#00ff0033")
-      .attr("stroke-width", d => d.id === selectedNodeId ? 3 : 1)
-      .style("filter", d => d.id === selectedNodeId ? "drop-shadow(0 0 8px #00ff00)" : "none");
+      .attr("r", d => {
+        const isSelected = d.id === selectedNodeId;
+        const isHovered = d.id === hoveredNodeId;
+        const isNeighbor = links.some(l => 
+          (l.source.id === hoveredNodeId && l.target.id === d.id) || 
+          (l.target.id === hoveredNodeId && l.source.id === d.id)
+        );
+        return isSelected || isHovered ? 14 : isNeighbor ? 10 : 8;
+      })
+      .attr("fill", d => d.imageUrl ? `url(#pattern-${d.id.replace(/[^a-zA-Z0-9]/g, '-')})` : (typeColors[d.type] || "#00ff00"))
+      .attr("stroke", d => {
+        const isSelected = d.id === selectedNodeId;
+        const isHovered = d.id === hoveredNodeId;
+        return isSelected || isHovered ? "#00ff00" : (typeColors[d.type] || "#00ff00") + "66";
+      })
+      .attr("stroke-width", d => d.id === selectedNodeId || d.id === hoveredNodeId ? 3 : 1)
+      .style("filter", d => d.id === selectedNodeId || d.id === hoveredNodeId ? "drop-shadow(0 0 8px #00ff00)" : "none");
 
     node.append("text")
       .text(d => d.label)
-      .attr("x", 14)
+      .attr("x", 18)
       .attr("y", 4)
-      .attr("fill", d => d.id === selectedNodeId ? "#00ff00" : "#eee")
-      .style("font-size", d => d.id === selectedNodeId ? "12px" : "10px")
-      .style("font-weight", d => d.id === selectedNodeId ? "bold" : "normal")
-      .style("font-family", "monospace");
+      .attr("fill", d => {
+        const isSelected = d.id === selectedNodeId;
+        const isHovered = d.id === hoveredNodeId;
+        const isNeighbor = links.some(l => 
+          (l.source.id === hoveredNodeId && l.target.id === d.id) || 
+          (l.target.id === hoveredNodeId && l.source.id === d.id)
+        );
+        return isSelected || isHovered ? "#00ff00" : isNeighbor ? "#eee" : "#666";
+      })
+      .style("font-size", d => d.id === selectedNodeId || d.id === hoveredNodeId ? "14px" : "10px")
+      .style("font-weight", d => d.id === selectedNodeId || d.id === hoveredNodeId ? "bold" : "normal")
+      .style("font-family", "monospace")
+      .style("pointer-events", "none");
 
     simulation.on("tick", () => {
       link.selectAll("line")
@@ -188,7 +242,7 @@ const Graph: React.FC<GraphProps> = ({ nodes, links, onNodeClick, onNodeDragEnd,
     return () => {
       simulation.stop();
     };
-  }, [nodes, links, selectedNodeId]);
+  }, [nodes, links, selectedNodeId, hoveredNodeId]);
 
   const handleZoomIn = () => (svgRef.current as any)?.zoomIn?.();
   const handleZoomOut = () => (svgRef.current as any)?.zoomOut?.();
@@ -208,10 +262,44 @@ const Graph: React.FC<GraphProps> = ({ nodes, links, onNodeClick, onNodeDragEnd,
     }
   };
 
+  const filteredNodes = nodes.filter(n => n.label.toLowerCase().includes(searchQuery.toLowerCase()));
+
   return (
     <div ref={containerRef} className="relative w-full h-full bg-[#0a0a0a] border border-[#333] rounded-lg overflow-hidden">
       <svg ref={svgRef} className="w-full h-full" />
       
+      {/* Search Overlay */}
+      <div className="absolute top-4 left-4 flex flex-col gap-2 z-20">
+        <div className="flex items-center gap-2 px-3 py-2 bg-[#1a1a1a]/90 border border-[#333] rounded-lg focus-within:border-[#00ff00] transition-all">
+          <Search size={14} className="text-[#666]" />
+          <input 
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="FIND ENTITY..."
+            className="bg-transparent border-none outline-none text-[10px] text-[#eee] w-32 md:w-48 font-mono placeholder:text-[#333]"
+          />
+        </div>
+        
+        {searchQuery && filteredNodes.length > 0 && (
+          <div className="bg-[#1a1a1a]/95 border border-[#333] rounded-lg max-h-48 overflow-y-auto custom-scrollbar">
+            {filteredNodes.map(n => (
+              <div 
+                key={n.id}
+                onClick={() => {
+                  if (onNodeClick) onNodeClick(n);
+                  (svgRef.current as any)?.centerOnNode?.(n.id);
+                  setSearchQuery('');
+                }}
+                className="p-2 text-[10px] text-[#eee] hover:bg-[#00ff00]/10 hover:text-[#00ff00] cursor-pointer border-b border-[#222] last:border-0 font-mono"
+              >
+                [{n.type.toUpperCase()}] {n.label}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* Zoom Controls Overlay */}
       <div className="absolute bottom-4 right-4 flex flex-col gap-2">
         <button 
@@ -253,14 +341,14 @@ const Graph: React.FC<GraphProps> = ({ nodes, links, onNodeClick, onNodeDragEnd,
         )}
       </div>
 
-      {/* Zoom Level Indicator */}
-      <div className="absolute top-4 right-4 px-2 py-1 bg-[#1a1a1a]/80 border border-[#333] text-[#00ff00] text-[10px] font-mono rounded">
-        ZOOM: {(zoomLevel * 100).toFixed(0)}%
-      </div>
-
-      <div className="absolute top-4 left-4 flex items-center gap-2 px-2 py-1 bg-[#1a1a1a]/80 border border-[#333] text-[#00ff00] text-[10px] font-mono rounded">
-        <MousePointer2 size={12} />
-        DRAG TO PAN / SCROLL TO ZOOM
+      <div className="absolute top-4 right-4 flex flex-col items-end gap-2">
+        <div className="px-2 py-1 bg-[#1a1a1a]/80 border border-[#333] text-[#00ff00] text-[10px] font-mono rounded">
+          ZOOM: {(zoomLevel * 100).toFixed(0)}%
+        </div>
+        <div className="flex items-center gap-2 px-2 py-1 bg-[#1a1a1a]/80 border border-[#333] text-[#00ff00] text-[10px] font-mono rounded">
+          <MousePointer2 size={12} />
+          DRAG TO PAN / SCROLL TO ZOOM
+        </div>
       </div>
     </div>
   );

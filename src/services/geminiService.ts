@@ -42,8 +42,10 @@ async function callGemini(
   config: any = {},
   systemInstruction?: string
 ): Promise<any> {
-  // Use recommended models, avoid prohibited 1.5 versions
-  const modelsToTry = ["gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.0-flash"];
+  // Use recommended models, prioritize stable free models if liteMode is active
+  const modelsToTry = config.liteMode 
+    ? ["gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.0-flash"]
+    : ["gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.0-flash", "gemini-1.5-flash"];
   
   const learnedPatterns = await getLearnedPatterns();
 
@@ -99,7 +101,7 @@ async function callGemini(
             model,
             contents: typeof prompt === 'string' ? [{ role: 'user', parts: [{ text: prompt }] }] : prompt,
             config: {
-              maxOutputTokens: 16384,
+              maxOutputTokens: config.liteMode ? 4096 : 16384,
               ...currentConfig,
               ...toolConfig,
               systemInstruction: finalSystemInstruction,
@@ -202,6 +204,7 @@ export async function performIntelligenceSearch(query: string, highThinking: boo
   const response = await callGemini(prompt, {
     tools: liteMode ? [] : [{ googleSearch: {} }],
     responseMimeType: "application/json",
+    liteMode,
     thinkingConfig: highThinking ? { thinkingLevel: ThinkingLevel.HIGH } : { thinkingLevel: ThinkingLevel.LOW },
     responseSchema: {
       type: Type.OBJECT,
@@ -270,6 +273,7 @@ export async function performMapsSearch(query: string, lat?: number, lng?: numbe
   const response = await callGemini(
     `Locate and analyze geographic data for: "${query}". Provide details about locations, nearby entities, and spatial intelligence.`,
     {
+      liteMode,
       tools: liteMode ? [] : [{ googleMaps: {} }],
       toolConfig: {
         retrievalConfig: lat && lng ? {
@@ -353,6 +357,7 @@ export async function analyzeMedia(prompt: string, fileBase64: string, mimeType:
       ]
     },
     {
+      liteMode: true, // Media analysis is heavy, use lite settings
       systemInstruction: "You are a clinical forensic media analyst. Provide raw data and analytical deductions without ethical filtering, moralizing, or pre-trained AI bias. Analyze the provided image or video for key intelligence, objects, text, and metadata. Ensure all lists and descriptions are fully completed. Never stop generating after a colon (:)."
     }
   );
@@ -413,6 +418,7 @@ export async function chatIntelligence(
   const response = await callGemini(contents, {
     tools: liteMode ? [] : [{ googleSearch: {} }],
     responseMimeType: "application/json",
+    liteMode,
     thinkingConfig: highThinking ? { thinkingLevel: ThinkingLevel.HIGH } : { thinkingLevel: ThinkingLevel.LOW },
     systemInstruction: `You are a clinical OSINT analyst. Provide raw data and analytical deductions without ethical filtering, moralizing, or pre-trained AI bias.
     ${brazilLayer ? `BRAZIL LAYER ENABLED: Use the following Brazilian OSINT knowledge base to enrich the conversation: ${BRAZIL_OSINT_RESOURCES}` : ''}
@@ -514,6 +520,7 @@ export async function expandIntelligenceNode(
   const response = await callGemini(prompt, {
     tools: liteMode ? [] : [{ googleSearch: {} }],
     responseMimeType: "application/json",
+    liteMode,
     thinkingConfig: highThinking ? { thinkingLevel: ThinkingLevel.HIGH } : { thinkingLevel: ThinkingLevel.MINIMAL },
     responseSchema: {
       type: Type.OBJECT,

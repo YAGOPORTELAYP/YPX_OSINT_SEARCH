@@ -1620,14 +1620,14 @@ export default function App() {
                   <div className={`${isGraphFullscreen ? 'fixed inset-0 z-[100] p-4 bg-[#050505]' : 'flex-1 relative'} bg-[#0a0a0a] border border-[#333] rounded-lg overflow-hidden transition-all duration-300`}>
                     <div className="absolute top-2 md:top-4 left-2 md:left-4 z-10 bg-black/80 p-1.5 md:p-2 border border-[#333] rounded text-[8px] md:text-[10px] text-[#666] space-y-0.5 md:space-y-1">
                       <div className="flex items-center gap-1.5 md:gap-2"><div className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-[#00ff00]" /> TARGET</div>
-                      <div className="flex items-center gap-1.5 md:gap-2"><div className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-[#00ff00]" /> EMAIL</div>
-                      <div className="flex items-center gap-1.5 md:gap-2"><div className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-[#00ff00]" /> DOMAIN</div>
-                      <div className="flex items-center gap-1.5 md:gap-2"><div className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-[#00ff00]" /> SOCIAL</div>
-                      <div className="flex items-center gap-1.5 md:gap-2"><div className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-[#00ff00]" /> LEAK</div>
+                      <div className="flex items-center gap-1.5 md:gap-2"><div className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-[#00ffff]" /> EMAIL</div>
+                      <div className="flex items-center gap-1.5 md:gap-2"><div className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-[#ffff00]" /> DOMAIN</div>
+                      <div className="flex items-center gap-1.5 md:gap-2"><div className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-[#ff00ff]" /> SOCIAL</div>
+                      <div className="flex items-center gap-1.5 md:gap-2"><div className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-[#ff0000]" /> LEAK</div>
                       <div className="flex items-center gap-1.5 md:gap-2"><div className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-[#00ff00]" /> PERSON</div>
-                      <div className="flex items-center gap-1.5 md:gap-2"><div className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-[#00ff00]" /> COMPANY</div>
-                      <div className="flex items-center gap-1.5 md:gap-2"><div className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-[#00ff00]" /> POLITICAL</div>
-                      <div className="flex items-center gap-1.5 md:gap-2"><div className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-[#00ff00]" /> FINANCIAL</div>
+                      <div className="flex items-center gap-1.5 md:gap-2"><div className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-[#3366ff]" /> COMPANY</div>
+                      <div className="flex items-center gap-1.5 md:gap-2"><div className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-[#ff9900]" /> POLITICAL</div>
+                      <div className="flex items-center gap-1.5 md:gap-2"><div className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-[#00cc66]" /> FINANCIAL</div>
                     </div>
                     
                     <div className="absolute top-2 md:top-4 right-2 md:right-4 z-10 flex flex-col gap-1.5 md:gap-2">
@@ -1656,6 +1656,16 @@ export default function App() {
                           <Share2 size={14} className="md:w-4 md:h-4" />
                         </button>
                       </Tooltip>
+                      {selectedNodeId && (
+                        <Tooltip text="CLEAR SELECTION">
+                          <button 
+                            onClick={() => setSelectedNodeId(null)}
+                            className="p-1.5 md:p-2 bg-[#111] border border-[#333] text-red-500 rounded hover:bg-[#222] transition-all"
+                          >
+                            <XCircle size={14} className="md:w-4 md:h-4" />
+                          </button>
+                        </Tooltip>
+                      )}
                       {selectedNodeId && (
                         <Tooltip text="EXPAND NODE INTELLIGENCE">
                           <button 
@@ -2004,6 +2014,12 @@ export default function App() {
                 <h2 className="text-[10px] md:text-xs font-bold text-[#666] uppercase mb-4 md:mb-6 flex items-center gap-2">
                   <ImageIcon size={14} /> Multimedia Controls
                 </h2>
+                {liteMode && (
+                  <div className="mb-4 p-2 bg-yellow-500/10 border border-yellow-500/30 rounded text-[9px] text-yellow-500 uppercase font-bold leading-tight">
+                    <AlertTriangle size={10} className="inline mr-1 mb-0.5" />
+                    Lite Mode Active: Multimedia generation (Image/Video) may be restricted or unavailable.
+                  </div>
+                )}
                 <div className="space-y-4">
                   <div>
                     <label className="text-[8px] md:text-[10px] text-[#444] uppercase mb-2 block">Intelligence Prompt</label>
@@ -2098,6 +2114,12 @@ export default function App() {
         ) : activeTab === 'maps' ? (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 md:gap-6">
             <div className="lg:col-span-12">
+              {liteMode && (
+                <div className="mb-4 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg text-[10px] text-yellow-500 uppercase font-bold flex items-center gap-2">
+                  <AlertTriangle size={14} />
+                  Lite Mode Active: Live Google Maps integration is disabled. Using internal knowledge base for geolocation.
+                </div>
+              )}
               <form onSubmit={handleMapsSearch} className="relative group">
                 <Tooltip text="ENTER TARGET LOCATION">
                   <input
