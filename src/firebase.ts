@@ -14,8 +14,9 @@ async function testConnection() {
     await getDocFromServer(doc(db, '_internal_', 'connection_test'));
     console.log("Firestore connection verified.");
   } catch (error) {
-    if (error instanceof Error && (error.message.includes('the client is offline') || error.message.includes('unavailable'))) {
-      console.error("CRITICAL: Firestore configuration mismatch or backend unreachable. Please check Firebase settings.");
+    console.warn("Firestore connection check failed. Features requiring database (History, Monitoring) may be limited.", error);
+    if (error instanceof Error && (error.message.includes('permission-denied'))) {
+       console.info("TIP: Check your Firestore Security Rules. Ensure /_internal_/connection_test is readable.");
     }
   }
 }

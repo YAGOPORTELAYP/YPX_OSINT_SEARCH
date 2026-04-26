@@ -137,5 +137,10 @@ service cloud.firestore {
       allow read: if isAuthenticated();
       allow write: if isAuthenticated(); // In a real app, this would be restricted to an admin/system role
     }
+
+    // Health check path for testConnection
+    match /_internal_/connection_test {
+      allow read: if true;
+    }
   }
 }
